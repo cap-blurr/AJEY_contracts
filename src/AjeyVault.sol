@@ -44,17 +44,13 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     event PerformanceFeeTaken(address indexed treasury, uint256 feeAssets, uint256 feeShares);
     event ParamsUpdated(bytes32 indexed param, uint256 oldValue, uint256 newValue);
 
-    constructor(
-        IERC20 asset_,
-        IERC20 aToken_,
-        address treasury_,
-        uint16 feeBps_,
-        IAaveV3Pool aavePool_,
-        address admin
-    ) ERC20(
-        string.concat("Ajey ", IERC20Metadata(address(asset_)).symbol(), " Vault Share"),
-        string.concat("aJ-", IERC20Metadata(address(asset_)).symbol())
-    ) ERC4626(asset_) {
+    constructor(IERC20 asset_, IERC20 aToken_, address treasury_, uint16 feeBps_, IAaveV3Pool aavePool_, address admin)
+        ERC20(
+            string.concat("Ajey ", IERC20Metadata(address(asset_)).symbol(), " Vault Share"),
+            string.concat("aJ-", IERC20Metadata(address(asset_)).symbol())
+        )
+        ERC4626(asset_)
+    {
         require(treasury_ != address(0), "treasury=0");
         require(address(aavePool_) != address(0), "pool=0");
         require(feeBps_ <= 1500, "fee too high");
@@ -91,8 +87,13 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         _revokeRole(AGENT_ROLE, agent);
     }
 
-    function pause() external onlyRole(PAUSER_ROLE) { _pause(); }
-    function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
+    function pause() external onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(PAUSER_ROLE) {
+        _unpause();
+    }
 
     // --- ERC-4626 Overrides ---
     function totalAssets() public view override returns (uint256) {
@@ -254,5 +255,4 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         emit Withdraw(msg.sender, receiver, owner, assets, shares);
     }
 }
-
 

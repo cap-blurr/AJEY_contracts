@@ -27,7 +27,9 @@ contract RebasingWrapperTest is Test {
         pool = new MockAaveV3Pool();
         pool.setAToken(address(usdc), address(aUsdc));
 
-        vault = new AjeyVault(IERC20(address(usdc)), IERC20(address(aUsdc)), treasury, 1000, IAaveV3Pool(address(pool)), admin);
+        vault = new AjeyVault(
+            IERC20(address(usdc)), IERC20(address(aUsdc)), treasury, 1000, IAaveV3Pool(address(pool)), admin
+        );
         wrapper = new RebasingWrapper(vault, admin);
 
         vm.prank(admin);
@@ -112,7 +114,7 @@ contract RebasingWrapperTest is Test {
 
         // advance time so sample window > 0
         skip(1 hours);
-        (uint256 est, ) = wrapper.estimateUserEarnings(user, 1 days);
+        (uint256 est,) = wrapper.estimateUserEarnings(user, 1 days);
         (uint256 apyBps, uint256 sample) = wrapper.currentApy();
         assertGt(sample, 0);
         // Not asserting specific numbers; just ensure sane outputs
@@ -120,5 +122,4 @@ contract RebasingWrapperTest is Test {
         assertTrue(apyBps >= 0);
     }
 }
-
 

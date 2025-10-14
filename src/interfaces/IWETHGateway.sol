@@ -6,4 +6,3 @@ interface IWETHGateway {
     function withdrawETH(address pool, uint256 amount, address to) external;
 }
 
-

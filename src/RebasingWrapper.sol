@@ -117,7 +117,7 @@ contract RebasingWrapper is ERC20, AccessControl, ReentrancyGuard {
         sampleSeconds = dt;
     }
 
-    // --- Internal --- 
+    // --- Internal ---
     function _sharesToUnits(uint256 shares) internal view returns (uint256) {
         return (shares * rebasingIndex) / 1e18;
     }
@@ -126,5 +126,4 @@ contract RebasingWrapper is ERC20, AccessControl, ReentrancyGuard {
         return (units * 1e18) / rebasingIndex;
     }
 }
-
 

@@ -9,4 +9,3 @@ interface IETHGateway {
     function withdrawEth(address pool, uint256 amount, address to) external;
 }
 
-

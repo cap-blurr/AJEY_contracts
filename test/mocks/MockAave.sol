@@ -13,7 +13,15 @@ contract MockAaveV3Pool is IAaveV3Pool {
         MockAToken(aToken).setPool(address(this));
     }
 
-    function supply(address asset, uint256 amount, address onBehalfOf, uint16 /*referralCode*/ ) external override {
+    function supply(
+        address asset,
+        uint256 amount,
+        address onBehalfOf,
+        uint16 /*referralCode*/
+    )
+        external
+        override
+    {
         if (amount == 0) return;
         IERC20(asset).transferFrom(msg.sender, address(this), amount);
         // Mint aToken to onBehalfOf
@@ -34,11 +42,22 @@ contract MockAaveV3Pool is IAaveV3Pool {
 contract MockWETHGateway {
     address public pool;
     address public weth;
-    constructor(address _pool, address _weth) { pool = _pool; weth = _weth; }
+
+    constructor(address _pool, address _weth) {
+        pool = _pool;
+        weth = _weth;
+    }
 
     receive() external payable {}
 
-    function depositETH(address /*pool_*/, address onBehalfOf, uint16 /*ref*/ ) external payable {
+    function depositETH(
+        address,
+        /*pool_*/
+        address onBehalfOf,
+        uint16 /*ref*/
+    )
+        external
+        payable {
         // Wrap ETH to WETH balance simulation: transfer msg.value WETH to pool then mint aWETH to onBehalfOf
         // For tests, we simulate by transferring WETH to pool contract and minting aToken there.
         // Here we just call supply on the pool assuming msg.sender has approved; instead transfer directly to pool.
@@ -46,12 +65,18 @@ contract MockWETHGateway {
         // No-op: Pool mock mints in supply(). We'll simulate by calling pool.supply via msg.sender normally in tests.
     }
 
-    function withdrawETH(address /*pool_*/, uint256 amount, address to) external {
+    function withdrawETH(
+        address,
+        /*pool_*/
+        uint256 amount,
+        address to
+    )
+        external
+    {
         // In a real gateway, it would burn aWETH from msg.sender and send ETH to `to`.
         // For tests, we just transfer ETH directly if available.
         (bool ok,) = to.call{value: amount}("");
         require(ok, "eth send fail");
     }
 }
-
 

@@ -26,7 +26,9 @@ contract AjeyVaultTest is Test {
         pool = new MockAaveV3Pool();
         pool.setAToken(address(usdc), address(aUsdc));
 
-        vault = new AjeyVault(IERC20(address(usdc)), IERC20(address(aUsdc)), treasury, 1000, IAaveV3Pool(address(pool)), admin);
+        vault = new AjeyVault(
+            IERC20(address(usdc)), IERC20(address(aUsdc)), treasury, 1000, IAaveV3Pool(address(pool)), admin
+        );
         vm.prank(admin);
         vault.addAgent(agent);
     }
@@ -74,7 +76,7 @@ contract AjeyVaultTest is Test {
         vm.prank(user);
         uint256 burned = vault.withdraw(500_000, user, user);
         assertGt(burned, 0);
-        // user started with 2_000_000; after deposit 1_000_000, had 1_000_000 left; 
+        // user started with 2_000_000; after deposit 1_000_000, had 1_000_000 left;
         // withdrew 500_000 now, so should be 1_500_000
         assertEq(usdc.balanceOf(user), 1_500_000);
         assertEq(aUsdc.balanceOf(address(vault)), 500_000);
@@ -232,5 +234,4 @@ contract AjeyVaultTest is Test {
         vault.supplyToAave(1);
     }
 }
-
 
