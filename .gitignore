@@ -13,3 +13,6 @@ docs/
 
 # Dotenv file
 .env
+
+addresses.txt
+INTEGRATION_GUIDE.md
