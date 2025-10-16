@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IWETH} from "../../src/interfaces/IWETH.sol";
 
 contract MockERC20 is ERC20 {
     uint8 private _customDecimals;
@@ -36,6 +37,27 @@ contract MockAToken is ERC20 {
     function burn(address from, uint256 amt) external {
         require(msg.sender == pool, "only pool");
         _burn(from, amt);
+    }
+}
+
+// Minimal WETH implementation for testing fallback path
+contract MockWETH is ERC20, IWETH {
+    constructor() ERC20("Mock WETH", "WETH") {}
+
+    // Accept direct ETH sends and treat as deposit
+    receive() external payable {
+        deposit();
+    }
+
+    function deposit() public payable override {
+        require(msg.value > 0, "no ETH");
+        _mint(msg.sender, msg.value);
+    }
+
+    function withdraw(uint256 amount) external override {
+        _burn(msg.sender, amount);
+        (bool ok,) = msg.sender.call{value: amount}("");
+        require(ok, "ETH send fail");
     }
 }
 

@@ -5,7 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {AjeyVault} from "../src/AjeyVault.sol";
 import {IAaveV3Pool} from "../src/interfaces/IAaveV3Pool.sol";
 import {IWETHGateway} from "../src/interfaces/IWETHGateway.sol";
-import {MockERC20, MockAToken} from "./mocks/MockTokens.sol";
+import {IWETH} from "../src/interfaces/IWETH.sol";
+import {MockERC20, MockAToken, MockWETH} from "./mocks/MockTokens.sol";
 import {MockAaveV3Pool, MockWETHGateway} from "./mocks/MockAave.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -20,6 +21,10 @@ contract AjeyVaultTest is Test {
     MockAaveV3Pool internal pool;
     AjeyVault internal vault;
 
+    // WETH fallback test fixtures
+    MockWETH internal weth;
+    MockAToken internal aWeth;
+
     function setUp() public {
         usdc = new MockERC20("Mock USDC", "USDC", 6);
         aUsdc = new MockAToken("Mock aUSDC", "aUSDC");
@@ -31,6 +36,11 @@ contract AjeyVaultTest is Test {
         );
         vm.prank(admin);
         vault.addAgent(agent);
+
+        // WETH fixtures for ETH tests
+        weth = new MockWETH();
+        aWeth = new MockAToken("Mock aWETH", "aWETH");
+        pool.setAToken(address(weth), address(aWeth));
     }
 
     function test_Deposit_MintShares() public {
@@ -43,6 +53,81 @@ contract AjeyVaultTest is Test {
         assertGt(shares, 0);
         assertEq(vault.balanceOf(user), shares);
         assertEq(usdc.balanceOf(address(vault)), 500_000);
+    }
+
+    function test_DepositEth_FallbackWrapsAndSupplies_WhenNoGateway() public {
+        // Deploy a new vault configured for WETH underlying
+        AjeyVault wethVault = new AjeyVault(
+            IERC20(address(weth)), IERC20(address(aWeth)), treasury, 1000, IAaveV3Pool(address(pool)), admin
+        );
+        vm.prank(admin);
+        wethVault.addAgent(agent);
+
+        // Enable ETH mode without gateway
+        vm.prank(admin);
+        wethVault.setEthGateway(address(0), true);
+
+        // User deposits native ETH
+        vm.deal(user, 5 ether);
+        vm.prank(user);
+        uint256 shares = wethVault.depositEth{value: 2 ether}(user);
+        assertEq(wethVault.balanceOf(user), shares);
+
+        // Shares minted
+        assertGt(shares, 0);
+        assertEq(wethVault.balanceOf(user), shares);
+        // aWETH minted to vault (supplied to pool)
+        assertEq(aWeth.balanceOf(address(wethVault)), 2 ether);
+        // No idle WETH remains since we supply immediately
+        assertEq(weth.balanceOf(address(wethVault)), 0);
+    }
+
+    function test_WithdrawEth_FallbackUnwraps_WhenNoGateway() public {
+        // New WETH vault as above
+        AjeyVault wethVault = new AjeyVault(
+            IERC20(address(weth)), IERC20(address(aWeth)), treasury, 1000, IAaveV3Pool(address(pool)), admin
+        );
+        vm.prank(admin);
+        wethVault.addAgent(agent);
+        vm.prank(admin);
+        wethVault.setEthGateway(address(0), true);
+
+        // Deposit 2 ETH
+        vm.deal(user, 5 ether);
+        vm.prank(user);
+        uint256 shares = wethVault.depositEth{value: 2 ether}(user);
+
+        // Redeem 1 ETH via withdrawEth
+        uint256 balBefore = user.balance;
+        vm.prank(user);
+        uint256 burned = wethVault.withdrawEth(1 ether, user, user);
+        assertGt(burned, 0);
+        assertEq(user.balance, balBefore + 1 ether);
+        // aToken balance reduced accordingly
+        assertEq(aWeth.balanceOf(address(wethVault)), 1 ether);
+    }
+
+    function test_DepositEth_UsesGateway_WhenConfigured() public {
+        // New WETH vault
+        AjeyVault wethVault = new AjeyVault(
+            IERC20(address(weth)), IERC20(address(aWeth)), treasury, 1000, IAaveV3Pool(address(pool)), admin
+        );
+        vm.prank(admin);
+        wethVault.addAgent(agent);
+
+        // Configure mock gateway and enable
+        MockWETHGateway gw = new MockWETHGateway(address(pool), address(weth));
+        vm.prank(admin);
+        wethVault.setEthGateway(address(gw), true);
+
+        // Deposit via gateway path
+        vm.deal(user, 3 ether);
+        vm.prank(user);
+        uint256 shares = wethVault.depositEth{value: 1 ether}(user);
+        assertEq(wethVault.balanceOf(user), shares);
+        assertGt(shares, 0);
+        assertEq(wethVault.balanceOf(user), shares);
+        // In mock gateway, we don't actually route to pool, so just assert no revert and shares minted
     }
 
     function test_AgentSupplyToAave_MintsAToken() public {
@@ -67,6 +152,7 @@ contract AjeyVaultTest is Test {
         usdc.mint(user, 2_000_000);
         usdc.approve(address(vault), type(uint256).max);
         uint256 shares = vault.deposit(1_000_000, user);
+        assertEq(vault.balanceOf(user), shares);
         vm.stopPrank();
 
         vm.prank(agent);

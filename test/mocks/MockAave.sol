@@ -3,9 +3,11 @@ pragma solidity ^0.8.24;
 
 import {IAaveV3Pool} from "../../src/interfaces/IAaveV3Pool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {MockAToken} from "./MockTokens.sol";
 
 contract MockAaveV3Pool is IAaveV3Pool {
+    using SafeERC20 for IERC20;
     mapping(address => address) public aTokenOf; // underlying => aToken
 
     function setAToken(address asset, address aToken) external {
@@ -23,7 +25,7 @@ contract MockAaveV3Pool is IAaveV3Pool {
         override
     {
         if (amount == 0) return;
-        IERC20(asset).transferFrom(msg.sender, address(this), amount);
+        IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
         // Mint aToken to onBehalfOf
         MockAToken(aTokenOf[asset]).mint(onBehalfOf, amount);
     }
@@ -33,7 +35,7 @@ contract MockAaveV3Pool is IAaveV3Pool {
             amount = IERC20(aTokenOf[asset]).balanceOf(msg.sender);
         }
         MockAToken(aTokenOf[asset]).burn(msg.sender, amount);
-        IERC20(asset).transfer(to, amount);
+        IERC20(asset).safeTransfer(to, amount);
         return amount;
     }
 }

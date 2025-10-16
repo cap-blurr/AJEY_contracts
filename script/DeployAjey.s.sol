@@ -14,7 +14,8 @@ contract DeployAjey is Script {
         // Optional PRIVATE_KEY; if not provided, Foundry will use the default broadcaster
         uint256 privKey = vm.envOr("PRIVATE_KEY", uint256(0));
         address broadcaster = privKey != 0 ? vm.addr(privKey) : address(0);
-        if (privKey != 0) vm.startBroadcast(privKey); else vm.startBroadcast();
+        if (privKey != 0) vm.startBroadcast(privKey);
+        else vm.startBroadcast();
 
         // Required envs
         address asset = vm.envAddress("ASSET");
@@ -29,22 +30,19 @@ contract DeployAjey is Script {
         address agent = vm.envOr("AGENT", address(0));
 
         // Deploy AjeyVault
-        AjeyVault vault = new AjeyVault(
-            IERC20(asset),
-            IERC20(aToken),
-            treasury,
-            feeBps,
-            IAaveV3Pool(pool),
-            admin
-        );
+        AjeyVault vault = new AjeyVault(IERC20(asset), IERC20(aToken), treasury, feeBps, IAaveV3Pool(pool), admin);
 
-        // Optionally enable native ETH via gateway
+        // Optionally enable native ETH. If ETH_GATEWAY is zero and ENABLE_ETH=true,
+        // the vault will use local WETH wrap/unwrap fallback.
         address ethGateway = vm.envOr("ETH_GATEWAY", address(0));
         bool enableEth = vm.envOr("ENABLE_ETH", false);
-        if (ethGateway != address(0) && enableEth) {
+        if (enableEth) {
             // Only the admin can call setEthGateway; ensure broadcaster is admin
             if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
                 vault.setEthGateway(ethGateway, true);
+                if (ethGateway == address(0)) {
+                    console2.log("ETH mode enabled without gateway (using local WETH fallback)");
+                }
             } else {
                 console2.log("WARN: Skipping setEthGateway - broadcaster != admin");
             }
@@ -78,5 +76,4 @@ contract DeployAjey is Script {
         vm.stopBroadcast();
     }
 }
-
 
