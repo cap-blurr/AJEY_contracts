@@ -6,7 +6,7 @@ import "forge-std/console2.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AjeyVault} from "../src/AjeyVault.sol";
-import {RebasingWrapper} from "../src/RebasingWrapper.sol";
+import {AgentReallocator} from "../src/AgentReallocator.sol";
 import {IAaveV3Pool} from "../src/interfaces/IAaveV3Pool.sol";
 
 contract DeployAjey is Script {
@@ -57,19 +57,26 @@ contract DeployAjey is Script {
             }
         }
 
-        // Deploy RebasingWrapper
-        RebasingWrapper wrapper = new RebasingWrapper(vault, admin);
-        if (agent != address(0)) {
-            bytes32 role = wrapper.AGENT_ROLE();
-            if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
-                wrapper.grantRole(role, agent);
+        // --- Deploy AgentReallocator ---
+        address reallocAdmin = vm.envOr("REALLOCATOR_ADMIN", admin);
+        address reallocAgent = vm.envOr("REALLOCATOR_AGENT", agent);
+        require(reallocAdmin != address(0), "realloc admin=0");
+        require(reallocAgent != address(0), "realloc agent=0");
+        AgentReallocator reallocator = new AgentReallocator(reallocAdmin, reallocAgent);
+
+        // Optionally whitelist a default aggregator
+        address aggregator = vm.envOr("AGGREGATOR", address(0));
+        bool allowAggregator = vm.envOr("ALLOW_AGGREGATOR", false);
+        if (allowAggregator && aggregator != address(0)) {
+            if (reallocAdmin == (broadcaster == address(0) ? reallocAdmin : broadcaster)) {
+                reallocator.setAggregator(aggregator, true);
             } else {
-                console2.log("WARN: Skipping wrapper.grantRole - broadcaster != admin");
+                console2.log("WARN: Skipping setAggregator - broadcaster != realloc admin");
             }
         }
 
         console2.log("AjeyVault", address(vault));
-        console2.log("RebasingWrapper", address(wrapper));
+        console2.log("AgentReallocator", address(reallocator));
         console2.log("Admin", admin);
         if (agent != address(0)) console2.log("Agent", agent);
 

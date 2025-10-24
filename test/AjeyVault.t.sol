@@ -55,7 +55,7 @@ contract AjeyVaultTest is Test {
         assertEq(usdc.balanceOf(address(vault)), 500_000);
     }
 
-    function test_DepositEth_FallbackWrapsAndSupplies_WhenNoGateway() public {
+    function test_DepositEth_WrapsOnly_NoAutoSupply() public {
         // Deploy a new vault configured for WETH underlying
         AjeyVault wethVault = new AjeyVault(
             IERC20(address(weth)), IERC20(address(aWeth)), treasury, 1000, IAaveV3Pool(address(pool)), admin
@@ -73,16 +73,19 @@ contract AjeyVaultTest is Test {
         uint256 shares = wethVault.depositEth{value: 2 ether}(user);
         assertEq(wethVault.balanceOf(user), shares);
 
-        // Shares minted
+        // Shares minted; idle WETH remains in the vault (no auto-supply)
         assertGt(shares, 0);
-        assertEq(wethVault.balanceOf(user), shares);
-        // aWETH minted to vault (supplied to pool)
-        assertEq(aWeth.balanceOf(address(wethVault)), 2 ether);
-        // No idle WETH remains since we supply immediately
+        assertEq(weth.balanceOf(address(wethVault)), 2 ether);
+        assertEq(aWeth.balanceOf(address(wethVault)), 0);
+
+        // Agent allocates to Aave
+        vm.prank(agent);
+        wethVault.supplyToAave(2 ether);
         assertEq(weth.balanceOf(address(wethVault)), 0);
+        assertEq(aWeth.balanceOf(address(wethVault)), 2 ether);
     }
 
-    function test_WithdrawEth_FallbackUnwraps_WhenNoGateway() public {
+    function test_WithdrawEth_UsesIdleThenPullsFromAave_Unwraps() public {
         // New WETH vault as above
         AjeyVault wethVault = new AjeyVault(
             IERC20(address(weth)), IERC20(address(aWeth)), treasury, 1000, IAaveV3Pool(address(pool)), admin
@@ -92,10 +95,14 @@ contract AjeyVaultTest is Test {
         vm.prank(admin);
         wethVault.setEthGateway(address(0), true);
 
-        // Deposit 2 ETH
+        // Deposit 2 ETH (wrap only)
         vm.deal(user, 5 ether);
         vm.prank(user);
         uint256 shares = wethVault.depositEth{value: 2 ether}(user);
+
+        // Agent supplies 2 ETH to Aave (convert WETH -> aWETH)
+        vm.prank(agent);
+        wethVault.supplyToAave(2 ether);
 
         // Redeem 1 ETH via withdrawEth
         uint256 balBefore = user.balance;
@@ -168,7 +175,7 @@ contract AjeyVaultTest is Test {
         assertEq(aUsdc.balanceOf(address(vault)), 500_000);
     }
 
-    function test_RebaseAndTakeFees_MintsFeeShares() public {
+    function test_TakeFees_MintsFeeShares() public {
         // deposit and supply
         vm.startPrank(user);
         usdc.mint(user, 2_000_000);
@@ -178,9 +185,9 @@ contract AjeyVaultTest is Test {
         vm.prank(agent);
         vault.supplyToAave(1_000_000);
 
-        // first rebase sets checkpoint baseline
+        // first checkpoint sets baseline (no fees taken)
         vm.prank(agent);
-        vault.rebaseAndTakeFees();
+        vault.checkpoint();
 
         // simulate yield by minting aToken to vault (only pool can mint)
         vm.prank(address(pool));
@@ -188,7 +195,7 @@ contract AjeyVaultTest is Test {
 
         uint256 supplyBefore = vault.totalSupply();
         vm.prank(agent);
-        vault.rebaseAndTakeFees();
+        vault.takeFees();
         uint256 supplyAfter = vault.totalSupply();
 
         assertGt(supplyAfter, supplyBefore);

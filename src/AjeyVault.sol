@@ -37,13 +37,14 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
 
     // --- Accounting ---
     uint256 public lastCheckpointAssets;
-    uint256 public lastRebaseTimestamp;
+    uint256 public lastCheckpointTimestamp;
 
     // --- Events (subset + custom) ---
     event SuppliedToAave(address indexed asset, uint256 amount, address indexed agent);
     event WithdrawnFromAave(address indexed asset, uint256 amount, address indexed agent);
     event PerformanceFeeTaken(address indexed treasury, uint256 feeAssets, uint256 feeShares);
     event ParamsUpdated(bytes32 indexed param, uint256 oldValue, uint256 newValue);
+    event Checkpointed(uint256 assets, uint256 timestamp);
 
     constructor(IERC20 asset_, IERC20 aToken_, address treasury_, uint16 feeBps_, IAaveV3Pool aavePool_, address admin)
         ERC20(
@@ -64,7 +65,7 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(PAUSER_ROLE, admin);
-        lastRebaseTimestamp = block.timestamp;
+        lastCheckpointTimestamp = block.timestamp;
 
         // one-time max approval for Pool to pull underlying for supply
         UNDERLYING.forceApprove(address(aavePool), type(uint256).max);
@@ -171,21 +172,20 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     }
 
     // --- Fees & Checkpointing ---
-    /// @notice Computes gain vs checkpoint and mints fee shares to treasury. Updates checkpoint and timestamp.
-    function rebaseAndTakeFees() external whenNotPaused onlyRole(AGENT_ROLE) {
+    /// @notice Computes gain vs checkpoint and mints fee shares to treasury. Does not alter user balances.
+    function takeFees() public whenNotPaused onlyRole(AGENT_ROLE) {
         uint256 currentAssets = totalAssets();
-        uint256 checkpoint = lastCheckpointAssets;
-        if (checkpoint == 0) {
+        uint256 prevCheckpointAssets = lastCheckpointAssets;
+        if (prevCheckpointAssets == 0) {
             lastCheckpointAssets = currentAssets;
-            lastRebaseTimestamp = block.timestamp;
+            lastCheckpointTimestamp = block.timestamp;
             return;
         }
 
-        if (currentAssets > checkpoint && feeBps > 0) {
-            uint256 grossGain = currentAssets - checkpoint;
+        if (currentAssets > prevCheckpointAssets && feeBps > 0) {
+            uint256 grossGain = currentAssets - prevCheckpointAssets;
             uint256 feeAssets = (grossGain * feeBps) / 10_000;
             if (feeAssets > 0) {
-                // Mint fee shares equivalent to feeAssets to treasury
                 uint256 sharesForFee = convertToShares(feeAssets);
                 if (sharesForFee > 0) {
                     _mint(treasury, sharesForFee);
@@ -195,7 +195,15 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         }
 
         lastCheckpointAssets = totalAssets(); // after mint
-        lastRebaseTimestamp = block.timestamp;
+        lastCheckpointTimestamp = block.timestamp;
+    }
+
+    /// @notice Updates the checkpoint and timestamp without taking fees.
+    function checkpoint() public whenNotPaused onlyRole(AGENT_ROLE) {
+        uint256 assetsNow = totalAssets();
+        lastCheckpointAssets = assetsNow;
+        lastCheckpointTimestamp = block.timestamp;
+        emit Checkpointed(assetsNow, block.timestamp);
     }
 
     // --- Views ---
@@ -217,7 +225,7 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         }
     }
 
-    /// @notice Deposit native ETH via Aave WETH Gateway if configured; otherwise locally wrap to WETH.
+    /// @notice Deposit native ETH; wraps to WETH and leaves funds idle. Agent later allocates via supplyToAave.
     function depositEth(address receiver) external payable whenNotPaused nonReentrant returns (uint256 shares) {
         require(ethMode, "ETH disabled");
         uint256 assets = msg.value;
@@ -226,23 +234,16 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         // Preview shares against current vault accounting
         shares = previewDeposit(assets);
 
-        if (address(ethGateway) != address(0)) {
-            // Supply ETH directly to Aave via Gateway; Vault receives aWETH
-            ethGateway.depositETH{value: assets}(address(aavePool), address(this), 0);
-        } else {
-            // Fallback: wrap to WETH locally; UNDERLYING must be WETH
-            require(address(UNDERLYING) != address(0), "asset=0");
-            IWETH(address(UNDERLYING)).deposit{value: assets}();
-            // Supply wrapped WETH to Aave Pool so the vault receives aTokens
-            aavePool.supply(address(UNDERLYING), assets, address(this), 0);
-        }
+        // Always wrap to WETH locally; do not auto-allocate to Aave
+        require(address(UNDERLYING) != address(0), "asset=0");
+        IWETH(address(UNDERLYING)).deposit{value: assets}();
 
         // Mint shares representing the newly managed assets
         _mint(receiver, shares);
         emit Deposit(msg.sender, receiver, assets, shares);
     }
 
-    /// @notice Redeem shares for native ETH via WETH Gateway if configured; otherwise unwrap WETH locally.
+    /// @notice Redeem shares for native ETH by withdrawing WETH if needed and unwrapping locally.
     function withdrawEth(uint256 assets, address receiver, address owner)
         external
         whenNotPaused
@@ -261,22 +262,17 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         // Burn shares from owner first, then realize liquidity and deliver ETH
         _burn(owner, shares);
 
-        if (address(ethGateway) != address(0)) {
-            // aToken approval to gateway set in setEthGateway; perform ETH withdrawal to receiver
-            ethGateway.withdrawETH(address(aavePool), assets, receiver);
-        } else {
-            // Ensure WETH liquidity in vault, pulling from Aave if needed
-            uint256 idle = UNDERLYING.balanceOf(address(this));
-            if (idle < assets) {
-                uint256 toPull = assets - idle;
-                aavePool.withdraw(address(UNDERLYING), toPull, address(this));
-            }
-            // Unwrap WETH to ETH and forward
-            require(address(UNDERLYING) != address(0), "asset=0");
-            IWETH(address(UNDERLYING)).withdraw(assets);
-            (bool ok,) = payable(receiver).call{value: assets}("");
-            require(ok, "ETH send failed");
+        // Ensure WETH liquidity in vault, pulling from Aave if needed
+        uint256 idle = UNDERLYING.balanceOf(address(this));
+        if (idle < assets) {
+            uint256 toPull = assets - idle;
+            aavePool.withdraw(address(UNDERLYING), toPull, address(this));
         }
+        // Unwrap WETH to ETH and forward
+        require(address(UNDERLYING) != address(0), "asset=0");
+        IWETH(address(UNDERLYING)).withdraw(assets);
+        (bool ok,) = payable(receiver).call{value: assets}("");
+        require(ok, "ETH send failed");
 
         emit Withdraw(msg.sender, receiver, owner, assets, shares);
     }
