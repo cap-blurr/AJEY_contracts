@@ -73,6 +73,7 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
         require(block.timestamp <= deadline, "expired");
         require(owner != address(0) && receiver != address(0), "bad addr");
         require(sourceVault != address(0) && targetVault != address(0), "bad vault");
+        require(sourceVault != targetVault, "same vault");
         require(shares > 0, "zero shares");
 
         address assetFrom = IERC4626(sourceVault).asset();
@@ -131,6 +132,7 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
 
     function _getRevertMsg(bytes memory returnData) private pure returns (string memory) {
         if (returnData.length < 68) return "swap failed";
+        if (returnData.length > 1000) return "swap failed: data too long";
         assembly {
             returnData := add(returnData, 0x04)
         }

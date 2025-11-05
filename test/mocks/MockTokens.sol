@@ -50,8 +50,10 @@ contract MockWETH is ERC20, IWETH {
     }
 
     function deposit() public payable override {
-        require(msg.value > 0, "no ETH");
-        _mint(msg.sender, msg.value);
+        // Allow zero-value deposits like real WETH (used for interface validation)
+        if (msg.value > 0) {
+            _mint(msg.sender, msg.value);
+        }
     }
 
     function withdraw(uint256 amount) external override {
