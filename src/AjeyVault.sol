@@ -225,8 +225,9 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
             // Validate UNDERLYING supports WETH interface by attempting a zero-value deposit
             // This prevents enabling ETH mode on non-WETH vaults
             try IWETH(address(UNDERLYING)).deposit{value: 0}() {
-                // Success - UNDERLYING is WETH-compatible
-            } catch {
+            // Success - UNDERLYING is WETH-compatible
+            }
+            catch {
                 revert("UNDERLYING not WETH");
             }
         }
