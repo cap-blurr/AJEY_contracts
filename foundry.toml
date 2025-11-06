@@ -5,6 +5,17 @@ libs = ["lib"]
 
 # Compiler and remappings
 solc_version = "0.8.24"
-remappings = ["@openzeppelin/=lib/openzeppelin-contracts/"]
+auto_detect_remappings = false
+remappings = [
+    "@openzeppelin/=lib/openzeppelin-contracts/contracts/",
+
+
+
+    "octant-v2-core/=lib/octant-v2-core/",
+
+    # Forge standard library
+    "forge-std/=lib/forge-std/src/",
+
+]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

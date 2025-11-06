@@ -2,8 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
+import {IERC4626} from "@openzeppelin/interfaces/IERC4626.sol";
 
 import {AjeyVault} from "../src/AjeyVault.sol";
 import {AgentReallocator} from "../src/AgentReallocator.sol";
