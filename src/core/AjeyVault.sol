@@ -36,6 +36,9 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     IWETHGateway public ethGateway;
     bool public ethMode;
 
+    // Auto-supply toggle: when enabled, deposits auto-supply idle to Aave
+    bool public autoSupply;
+
     // --- Accounting ---
     uint256 public lastCheckpointAssets;
     uint256 public lastCheckpointTimestamp;
@@ -95,6 +98,12 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         emit ParamsUpdated("treasury", uint256(uint160(treasury)), uint256(uint160(treasury_)));
         treasury = treasury_;
         feeBps = feeBps_;
+    }
+
+    /// @notice Enable or disable auto-supply of idle underlying to Aave after deposits
+    /// @param enabled True to enable, false to disable
+    function setAutoSupply(bool enabled) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        autoSupply = enabled;
     }
 
     /// @notice Add a strategy that can interact with this vault
@@ -157,6 +166,12 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         // Allow both public deposits and strategy deposits
         require(!hasRole(STRATEGY_ROLE, address(0)) || hasRole(STRATEGY_ROLE, msg.sender), "strategy only");
         shares = super.deposit(assets, receiver);
+        if (autoSupply) {
+            uint256 idle = UNDERLYING.balanceOf(address(this));
+            if (idle > 0) {
+                aavePool.supply(address(UNDERLYING), idle, address(this), 0);
+            }
+        }
     }
 
     /// @notice Mint shares for assets
@@ -171,6 +186,12 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         returns (uint256 assets)
     {
         assets = super.mint(shares, receiver);
+        if (autoSupply) {
+            uint256 idle = UNDERLYING.balanceOf(address(this));
+            if (idle > 0) {
+                aavePool.supply(address(UNDERLYING), idle, address(this), 0);
+            }
+        }
     }
 
     /// @notice Withdraw assets by burning shares

@@ -30,6 +30,7 @@ contract DonationSplitter is AccessControl, ReentrancyGuard {
     Recipient[] public recipients;
     mapping(address => mapping(address => uint256)) public claimable; // token => payee => amount
     mapping(address => bool) public isStrategy; // Authorized strategies that can send shares
+    mapping(address => uint256) public accounted; // token => amount of shares already allocated
 
     // Events
     event RecipientAdded(address indexed payee, uint256 weight);
@@ -154,15 +155,18 @@ contract DonationSplitter is AccessControl, ReentrancyGuard {
         emit StrategyUpdated(strategy, authorized);
     }
 
-    /// @notice Receive and distribute shares from strategies
+    /// @notice Account and distribute newly received strategy shares already held by this splitter
+    /// @dev Does NOT transfer tokens; it accounts for an 'amount' of shares that were minted/transferred here
     /// @param token Token address (strategy share token)
-    /// @param amount Amount received
+    /// @param amount Amount to account and split
     function receiveShares(address token, uint256 amount) external nonReentrant {
-        require(isStrategy[msg.sender], "unauthorized strategy");
+        // Allow either authorized strategies or admin to trigger accounting
+        require(isStrategy[msg.sender] || hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "unauthorized");
         require(amount > 0, "zero amount");
 
-        // Transfer shares from strategy
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        // Ensure this splitter actually holds at least this unaccounted amount
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        require(bal >= accounted[token] + amount, "insufficient unallocated");
 
         // Calculate and allocate to recipients
         uint256 totalWeight = _getTotalWeight();
@@ -175,6 +179,7 @@ contract DonationSplitter is AccessControl, ReentrancyGuard {
             }
         }
 
+        accounted[token] += amount;
         emit SharesReceived(token, amount);
     }
 

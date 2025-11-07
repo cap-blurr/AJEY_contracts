@@ -115,12 +115,18 @@ abstract contract BaseStrategy is ERC20, AccessControl, ReentrancyGuard {
         uint256 currentAssets = totalAssets();
         uint256 lastAssets = lastTotalAssets;
 
+        // First report guard: initialize baseline, do not donate principal
+        if (lastAssets == 0) {
+            lastTotalAssets = currentAssets;
+            return (0, 0);
+        }
+
         if (currentAssets > lastAssets) {
             profit = currentAssets - lastAssets;
 
-            // Mint donation shares for profit
+            // Mint donation shares for profit based on lastAssets baseline
             if (profit > 0 && totalSupply() > 0) {
-                uint256 donationShares = (profit * totalSupply()) / currentAssets;
+                uint256 donationShares = (profit * totalSupply()) / lastAssets;
                 if (donationShares > 0) {
                     _mint(donationAddress, donationShares);
                     emit Reported(profit, 0, donationShares);
@@ -129,9 +135,9 @@ abstract contract BaseStrategy is ERC20, AccessControl, ReentrancyGuard {
         } else if (currentAssets < lastAssets) {
             loss = lastAssets - currentAssets;
 
-            // Burn donation shares first on loss
-            uint256 donationBalance = balanceOf(donationAddress);
+            // Burn donation shares first on loss based on lastAssets baseline
             uint256 sharesToBurn = (loss * totalSupply()) / lastAssets;
+            uint256 donationBalance = balanceOf(donationAddress);
 
             if (sharesToBurn > 0 && donationBalance > 0) {
                 uint256 burnAmount = sharesToBurn > donationBalance ? donationBalance : sharesToBurn;

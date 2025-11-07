@@ -7,3 +7,6 @@
 [submodule "lib/octant-v2-strategy-foundry-mix"]
 	path = lib/octant-v2-strategy-foundry-mix
 	url = https://github.com/golemfoundation/octant-v2-strategy-foundry-mix
+[submodule "lib/octant-v2-core"]
+	path = lib/octant-v2-core
+	url = https://github.com/golemfoundation/octant-v2-core

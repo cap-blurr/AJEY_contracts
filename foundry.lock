@@ -20,6 +20,9 @@
       "rev": "8fcc0183bd92b0f898417e81ad385ab0a834c22f"
     }
   },
+  "lib/octant-v2-strategy-foundry-mix": {
+    "rev": "ddd405c18bb0c765c0256ca952d4d9f4034cf3ec"
+  },
   "lib/openzeppelin-contracts": {
     "tag": {
       "name": "v5.1.0",

@@ -76,38 +76,8 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
         onlyRole(AGENT_ROLE)
         nonReentrant
     {
-        require(amount > 0, "zero amount");
-
-        address fromStrategy = fromWETH ? ydsWETH : ydsUSDC;
-        address toStrategy = fromWETH ? ydsUSDC : ydsWETH;
-        address fromAsset = fromWETH ? weth : usdc;
-        address toAsset = fromWETH ? usdc : weth;
-
-        // Withdraw from source strategy
-        uint256 shares = _calculateSharesForAssets(fromStrategy, amount);
-        IBaseStrategy(fromStrategy).withdraw(amount, address(this), fromStrategy);
-
-        // Swap assets via Uniswap V3
-        IERC20(fromAsset).forceApprove(address(uniswapRouter), amount);
-
-        IUniswapV3Router.ExactInputSingleParams memory params = IUniswapV3Router.ExactInputSingleParams({
-            tokenIn: fromAsset,
-            tokenOut: toAsset,
-            fee: POOL_FEE,
-            recipient: address(this),
-            deadline: block.timestamp,
-            amountIn: amount,
-            amountOutMinimum: minAmountOut,
-            sqrtPriceLimitX96: 0
-        });
-
-        uint256 amountOut = uniswapRouter.exactInputSingle(params);
-
-        // Deposit into target strategy
-        IERC20(toAsset).forceApprove(toStrategy, amountOut);
-        IBaseStrategy(toStrategy).deposit(amountOut, toStrategy);
-
-        emit Reallocated(fromStrategy, toStrategy, amount);
+        // Disabled until a Multi-Strategy Vault or equivalent ownership model is adopted
+        revert("reallocate disabled: requires MSV ownership model");
     }
 
     /// @notice Trigger Aave supply for a specific vault
@@ -115,9 +85,8 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
     /// @param amount Amount to supply
     function triggerAaveSupply(bool isWETH, uint256 amount) external onlyRole(AGENT_ROLE) {
         address strategy = isWETH ? ydsWETH : ydsUSDC;
-        address payable vaultAddr = payable(
-            isWETH ? YDS_AaveWETH(strategy).ajeyVault() : YDS_AaveUSDC(strategy).ajeyVault()
-        );
+        address payable vaultAddr =
+            payable(isWETH ? YDS_AaveWETH(strategy).ajeyVault() : YDS_AaveUSDC(strategy).ajeyVault());
         AjeyVault vault = AjeyVault(vaultAddr);
 
         vault.supplyToAave(amount);
@@ -129,9 +98,8 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
     /// @param amount Amount to withdraw
     function triggerAaveWithdraw(bool isWETH, uint256 amount) external onlyRole(AGENT_ROLE) {
         address strategy = isWETH ? ydsWETH : ydsUSDC;
-        address payable vaultAddr = payable(
-            isWETH ? YDS_AaveWETH(strategy).ajeyVault() : YDS_AaveUSDC(strategy).ajeyVault()
-        );
+        address payable vaultAddr =
+            payable(isWETH ? YDS_AaveWETH(strategy).ajeyVault() : YDS_AaveUSDC(strategy).ajeyVault());
         AjeyVault vault = AjeyVault(vaultAddr);
 
         vault.withdrawFromAave(amount);
