@@ -128,11 +128,13 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
     /// @param fromStrategy Source strategy
     /// @param toStrategy Target strategy
     /// @param amount Amount to reallocate
-    function reallocateStrategies(address fromStrategy, address toStrategy, uint256 amount)
+    /// @param owner Address whose strategy shares will be burned on withdrawal and who will receive new shares
+    function reallocateStrategies(address owner, address fromStrategy, address toStrategy, uint256 amount)
         external
         onlyRole(AGENT_ROLE)
         nonReentrant
     {
+        require(owner != address(0), "owner=0");
         require(isStrategy[fromStrategy], "from not whitelisted");
         require(isStrategy[toStrategy], "to not whitelisted");
         require(amount > 0, "zero amount");
@@ -143,11 +145,13 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
         require(assetFrom == assetTo, "asset mismatch");
 
         // Withdraw from source strategy
-        IBaseStrategy(fromStrategy).withdraw(amount, address(this), fromStrategy);
+        // Requires that `owner` has approved this contract to spend sufficient shares
+        IBaseStrategy(fromStrategy).withdraw(amount, address(this), owner);
 
         // Deposit to target strategy
         IERC20(assetFrom).forceApprove(toStrategy, amount);
-        IBaseStrategy(toStrategy).deposit(amount, toStrategy);
+        // Mint new strategy shares to the original owner
+        IBaseStrategy(toStrategy).deposit(amount, owner);
 
         emit StrategyReallocated(fromStrategy, toStrategy, amount);
     }

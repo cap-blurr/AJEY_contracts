@@ -172,12 +172,27 @@ contract DonationSplitter is AccessControl, ReentrancyGuard {
         uint256 totalWeight = _getTotalWeight();
         require(totalWeight > 0, "no active recipients");
 
+        // Find last active recipient to receive dust remainder
+        uint256 lastActiveIdx = type(uint256).max;
+        for (uint256 j = recipients.length; j > 0; j--) {
+            if (recipients[j - 1].active) {
+                lastActiveIdx = j - 1;
+                break;
+            }
+        }
+        require(lastActiveIdx != type(uint256).max, "no active recipients");
+
+        uint256 distributed = 0;
         for (uint256 i = 0; i < recipients.length; i++) {
-            if (recipients[i].active) {
+            if (recipients[i].active && i != lastActiveIdx) {
                 uint256 share = (amount * recipients[i].weight) / totalWeight;
+                distributed += share;
                 claimable[token][recipients[i].payee] += share;
             }
         }
+        // Assign remainder to the last active recipient to avoid dust
+        uint256 remainder = amount - distributed;
+        claimable[token][recipients[lastActiveIdx].payee] += remainder;
 
         accounted[token] += amount;
         emit SharesReceived(token, amount);

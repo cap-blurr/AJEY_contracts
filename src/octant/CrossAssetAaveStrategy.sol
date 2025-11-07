@@ -6,6 +6,7 @@ import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {BaseStrategy} from "./BaseStrategy.sol";
 import {AjeyVault} from "../core/AjeyVault.sol";
 import {IUniswapV3Router} from "../interfaces/IUniswapV3Router.sol";
+import {IUniswapV3QuoterV2} from "../interfaces/IUniswapV3QuoterV2.sol";
 
 /// @title CrossAssetAaveStrategy
 /// @notice Cross-asset YDS that holds baseAsset shares but deploys into a target AjeyVault (different asset)
@@ -15,6 +16,7 @@ contract CrossAssetAaveStrategy is BaseStrategy {
 
     // External components
     IUniswapV3Router public immutable uniswapRouter;
+    IUniswapV3QuoterV2 public quoter;
 
     // Target AjeyVault (holds targetAsset and supplies to Aave)
     AjeyVault public targetVault;
@@ -25,9 +27,21 @@ contract CrossAssetAaveStrategy is BaseStrategy {
 
     // Pricing: base per target in 1e18 (management-updated; use TWAP off-chain)
     uint256 public basePerTarget1e18; // how many baseAsset units per 1 targetAsset
+    uint256 public lastPriceUpdate; // timestamp of last price update
+    uint256 public constant MAX_PRICE_AGE = 1 hours; // maximum allowed price age
+    uint256 public maxPriceDeviationBps = 11000; // 10% max step change (ratio vs previous) in bps (10000 = 1.0x)
+
+    // Swap safety controls
+    bool public swapsPaused; // allow emergency pause
+    uint256 public maxSwapBaseAmount; // max base amount per single swap action
+    uint256 public maxSwapTargetAmount; // max target amount per single swap action
 
     event TargetMarketUpdated(address targetVault, uint24 poolFee, uint256 slippageBps);
     event PricingUpdated(uint256 basePerTarget1e18);
+    event SwapsPaused(bool paused);
+    event SwapLimitsUpdated(uint256 maxSwapBaseAmount, uint256 maxSwapTargetAmount);
+    event PriceLimitsUpdated(uint256 maxPriceDeviationBps);
+    event QuoterUpdated(address quoter);
 
     /// @param _baseAsset The MSV base asset held by the strategy holders
     /// @param _donationAddress Donation address to receive minted shares on profit
@@ -49,6 +63,17 @@ contract CrossAssetAaveStrategy is BaseStrategy {
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(KEEPER_ROLE, _admin);
         _grantRole(MANAGEMENT_ROLE, _admin);
+
+        // defaults (no hard limits until configured)
+        maxSwapBaseAmount = type(uint256).max;
+        maxSwapTargetAmount = type(uint256).max;
+    }
+
+    /// @notice Set Uniswap V3 QuoterV2 address
+    function setQuoter(address _quoter) external onlyRole(MANAGEMENT_ROLE) {
+        require(_quoter != address(0), "quoter=0");
+        quoter = IUniswapV3QuoterV2(_quoter);
+        emit QuoterUpdated(_quoter);
     }
 
     /// @notice Set target AjeyVault and swap parameters
@@ -79,17 +104,94 @@ contract CrossAssetAaveStrategy is BaseStrategy {
     /// @param _basePerTarget1e18 base units per 1 target unit, scaled by 1e18
     function setPrice(uint256 _basePerTarget1e18) external onlyRole(KEEPER_ROLE) {
         require(_basePerTarget1e18 > 0, "price=0");
+        if (basePerTarget1e18 > 0) {
+            // ratio = max(new/old, old/new) in bps, must be <= maxPriceDeviationBps
+            uint256 a = _basePerTarget1e18 > basePerTarget1e18
+                ? (_basePerTarget1e18 * 10000) / basePerTarget1e18
+                : (basePerTarget1e18 * 10000) / _basePerTarget1e18;
+            require(a <= maxPriceDeviationBps, "price deviation too large");
+        }
         basePerTarget1e18 = _basePerTarget1e18;
+        lastPriceUpdate = block.timestamp;
         emit PricingUpdated(_basePerTarget1e18);
+    }
+
+    /// @notice Pause swaps in emergency
+    function pauseSwaps() external onlyRole(MANAGEMENT_ROLE) {
+        swapsPaused = true;
+        emit SwapsPaused(true);
+    }
+
+    /// @notice Unpause swaps
+    function unpauseSwaps() external onlyRole(MANAGEMENT_ROLE) {
+        swapsPaused = false;
+        emit SwapsPaused(false);
+    }
+
+    /// @notice Configure per-tx swap limits
+    function setSwapLimits(uint256 _maxSwapBaseAmount, uint256 _maxSwapTargetAmount)
+        external
+        onlyRole(MANAGEMENT_ROLE)
+    {
+        maxSwapBaseAmount = _maxSwapBaseAmount;
+        maxSwapTargetAmount = _maxSwapTargetAmount;
+        emit SwapLimitsUpdated(_maxSwapBaseAmount, _maxSwapTargetAmount);
+    }
+
+    /// @notice Configure allowed price step deviation (ratio in bps vs previous)
+    function setMaxPriceDeviationBps(uint256 _maxPriceDeviationBps) external onlyRole(MANAGEMENT_ROLE) {
+        require(_maxPriceDeviationBps >= 10000, "bad deviation");
+        require(_maxPriceDeviationBps <= 20000, "too large");
+        maxPriceDeviationBps = _maxPriceDeviationBps;
+        emit PriceLimitsUpdated(_maxPriceDeviationBps);
+    }
+
+    /// @notice Emergency withdraw of target asset without swapping
+    function emergencyWithdrawTarget(uint256 amount, address recipient) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(address(targetVault) != address(0), "vault unset");
+        require(recipient != address(0), "recipient=0");
+        targetVault.withdraw(amount, recipient, address(this));
+    }
+
+    function _requireSwapsActive() internal view {
+        require(!swapsPaused, "swaps paused");
+    }
+
+    function _validatePriceFreshness() internal view {
+        require(basePerTarget1e18 > 0, "price unset");
+        require(block.timestamp - lastPriceUpdate <= MAX_PRICE_AGE, "stale price");
     }
 
     /// @dev Swap helper base->target
     function swapBaseToTarget(uint256 amountBase) internal returns (uint256 amountOut) {
         if (amountBase == 0) return 0;
+        require(address(quoter) != address(0), "quoter unset");
         address tokenIn = address(asset);
         address tokenOut = targetVault.asset();
 
-        uint256 minOut = (amountBase * basePerTarget1e18 * (10_000 - slippageBps)) / (10_000 * 1e18);
+        // Quote expected output
+        (uint256 quotedOut,,,) = quoter.quoteExactInputSingle(
+            IUniswapV3QuoterV2.QuoteExactInputSingleParams({
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                fee: poolFee,
+                amountIn: amountBase,
+                sqrtPriceLimitX96: 0
+            })
+        );
+        require(quotedOut > 0, "quote=0");
+
+        // Sanity-check quoted price against configured basePerTarget
+        // impliedBasePerTarget = baseIn / targetOut (scaled 1e18)
+        uint256 impliedBasePerTarget = (amountBase * 1e18) / quotedOut;
+        {
+            uint256 ratio = impliedBasePerTarget > basePerTarget1e18
+                ? (impliedBasePerTarget * 10000) / basePerTarget1e18
+                : (basePerTarget1e18 * 10000) / impliedBasePerTarget;
+            require(ratio <= maxPriceDeviationBps, "quoter deviation too large");
+        }
+
+        uint256 minOut = (quotedOut * (10_000 - slippageBps)) / 10_000;
 
         IUniswapV3Router.ExactInputSingleParams memory params = IUniswapV3Router.ExactInputSingleParams({
             tokenIn: tokenIn,
@@ -107,11 +209,32 @@ contract CrossAssetAaveStrategy is BaseStrategy {
     /// @dev Swap helper target->base
     function swapTargetToBase(uint256 amountTarget) internal returns (uint256 amountOut) {
         if (amountTarget == 0) return 0;
+        require(address(quoter) != address(0), "quoter unset");
         address tokenIn = targetVault.asset();
         address tokenOut = address(asset);
 
-        // inverse: 1 target = basePerTarget1e18 base -> minOut = amountTarget * basePerTarget
-        uint256 minOut = (amountTarget * basePerTarget1e18 * (10_000 - slippageBps)) / (10_000 * 1e18);
+        // Quote expected output
+        (uint256 quotedOut,,,) = quoter.quoteExactInputSingle(
+            IUniswapV3QuoterV2.QuoteExactInputSingleParams({
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                fee: poolFee,
+                amountIn: amountTarget,
+                sqrtPriceLimitX96: 0
+            })
+        );
+        require(quotedOut > 0, "quote=0");
+
+        // impliedBasePerTarget = baseOut / targetIn (scaled 1e18)
+        uint256 impliedBasePerTarget = (quotedOut * 1e18) / amountTarget;
+        {
+            uint256 ratio = impliedBasePerTarget > basePerTarget1e18
+                ? (impliedBasePerTarget * 10000) / basePerTarget1e18
+                : (basePerTarget1e18 * 10000) / impliedBasePerTarget;
+            require(ratio <= maxPriceDeviationBps, "quoter deviation too large");
+        }
+
+        uint256 minOut = (quotedOut * (10_000 - slippageBps)) / 10_000;
 
         IUniswapV3Router.ExactInputSingleParams memory params = IUniswapV3Router.ExactInputSingleParams({
             tokenIn: tokenIn,
@@ -130,10 +253,14 @@ contract CrossAssetAaveStrategy is BaseStrategy {
     function _deployFunds(uint256 amount) internal override {
         if (amount == 0) return;
         require(address(targetVault) != address(0), "vault unset");
+        _requireSwapsActive();
+        _validatePriceFreshness();
+        require(amount <= maxSwapBaseAmount, "exceeds base limit");
 
         // Swap base -> target, deposit target into AjeyVault
         uint256 targetReceived = swapBaseToTarget(amount);
         if (targetReceived > 0) {
+            require(targetReceived <= maxSwapTargetAmount, "exceeds target limit");
             IERC20(targetVault.asset()).forceApprove(address(targetVault), targetReceived);
             targetVault.deposit(targetReceived, address(this));
             emit FundsDeployed(amount);
@@ -144,10 +271,14 @@ contract CrossAssetAaveStrategy is BaseStrategy {
     function _freeFunds(uint256 amount) internal override {
         if (amount == 0) return;
         require(address(targetVault) != address(0), "vault unset");
+        _requireSwapsActive();
+        _validatePriceFreshness();
+        require(amount <= maxSwapBaseAmount, "exceeds base limit");
 
         // Compute how much target to withdraw to realize `amount` base
         // Use pricing: base = target * basePerTarget1e18
         uint256 targetNeeded = (amount * 1e18 + basePerTarget1e18 - 1) / basePerTarget1e18; // ceil div
+        require(targetNeeded <= maxSwapTargetAmount, "exceeds target limit");
 
         if (targetNeeded > 0) {
             targetVault.withdraw(targetNeeded, address(this), address(this));

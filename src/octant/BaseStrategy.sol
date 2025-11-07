@@ -22,7 +22,6 @@ abstract contract BaseStrategy is ERC20, AccessControl, ReentrancyGuard {
     IERC20 public immutable asset;
     address public immutable donationAddress;
     uint256 public lastTotalAssets;
-    uint256 public totalDebt;
 
     // Events
     event Reported(uint256 profit, uint256 loss, uint256 donationShares);
@@ -68,7 +67,6 @@ abstract contract BaseStrategy is ERC20, AccessControl, ReentrancyGuard {
 
         // Deploy funds to underlying strategy
         _deployFunds(assets);
-        totalDebt += assets;
 
         // Mint shares to receiver
         _mint(receiver, shares);
@@ -99,7 +97,6 @@ abstract contract BaseStrategy is ERC20, AccessControl, ReentrancyGuard {
 
         // Free funds from strategy
         _freeFunds(assets);
-        totalDebt -= assets;
 
         // Transfer assets to receiver
         asset.safeTransfer(receiver, assets);
