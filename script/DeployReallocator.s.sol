@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import "forge-std/Script.sol";
 import "forge-std/console2.sol";
 
-import {AgentReallocator} from "../src/AgentReallocator.sol";
+import {AgentReallocator} from "../src/core/AgentReallocator.sol";
 
 contract DeployReallocator is Script {
     function run() external {

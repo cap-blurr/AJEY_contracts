@@ -5,8 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {IERC4626} from "@openzeppelin/interfaces/IERC4626.sol";
 
-import {AjeyVault} from "../src/AjeyVault.sol";
-import {AgentReallocator} from "../src/AgentReallocator.sol";
+import {AjeyVault} from "../src/core/AjeyVault.sol";
+import {AgentReallocator} from "../src/core/AgentReallocator.sol";
 import {IAaveV3Pool} from "../src/interfaces/IAaveV3Pool.sol";
 
 import {MockERC20, MockAToken} from "./mocks/MockTokens.sol";
