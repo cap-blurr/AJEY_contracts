@@ -7,6 +7,7 @@ import {ERC20} from "@openzeppelin/token/ERC20/ERC20.sol";
 import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
+import {IDonationSplitter} from "../interfaces/octant/IDonationSplitter.sol";
 
 /// @title BaseStrategy
 /// @notice Minimal implementation of Octant's Yield-Donating Strategy base
@@ -126,6 +127,9 @@ abstract contract BaseStrategy is ERC20, AccessControl, ReentrancyGuard {
                 uint256 donationShares = (profit * totalSupply()) / lastAssets;
                 if (donationShares > 0) {
                     _mint(donationAddress, donationShares);
+                    // Auto-account the newly minted shares in the splitter
+                    // Ignore failures so report() cannot be bricked by a misconfigured splitter
+                    try IDonationSplitter(donationAddress).receiveShares(address(this), donationShares) {} catch {}
                     emit Reported(profit, 0, donationShares);
                 }
             }

@@ -165,33 +165,39 @@ contract CrossAssetAaveStrategy is BaseStrategy {
     /// @dev Swap helper base->target
     function swapBaseToTarget(uint256 amountBase) internal returns (uint256 amountOut) {
         if (amountBase == 0) return 0;
-        require(address(quoter) != address(0), "quoter unset");
         address tokenIn = address(asset);
         address tokenOut = targetVault.asset();
 
-        // Quote expected output
-        (uint256 quotedOut,,,) = quoter.quoteExactInputSingle(
-            IUniswapV3QuoterV2.QuoteExactInputSingleParams({
-                tokenIn: tokenIn,
-                tokenOut: tokenOut,
-                fee: poolFee,
-                amountIn: amountBase,
-                sqrtPriceLimitX96: 0
-            })
-        );
-        require(quotedOut > 0, "quote=0");
-
-        // Sanity-check quoted price against configured basePerTarget
-        // impliedBasePerTarget = baseIn / targetOut (scaled 1e18)
-        uint256 impliedBasePerTarget = (amountBase * 1e18) / quotedOut;
-        {
-            uint256 ratio = impliedBasePerTarget > basePerTarget1e18
-                ? (impliedBasePerTarget * 10000) / basePerTarget1e18
-                : (basePerTarget1e18 * 10000) / impliedBasePerTarget;
-            require(ratio <= maxPriceDeviationBps, "quoter deviation too large");
+        uint256 minOut;
+        if (address(quoter) != address(0)) {
+            // Quote expected output
+            try quoter.quoteExactInputSingle(
+                IUniswapV3QuoterV2.QuoteExactInputSingleParams({
+                    tokenIn: tokenIn,
+                    tokenOut: tokenOut,
+                    fee: poolFee,
+                    amountIn: amountBase,
+                    sqrtPriceLimitX96: 0
+                })
+            ) returns (uint256 quotedOut, uint160, uint32, uint256) {
+                require(quotedOut > 0, "quote=0");
+                // Sanity-check quoted price against configured basePerTarget
+                // impliedBasePerTarget = baseIn / targetOut (scaled 1e18)
+                uint256 impliedBasePerTarget = (amountBase * 1e18) / quotedOut;
+                uint256 ratio = impliedBasePerTarget > basePerTarget1e18
+                    ? (impliedBasePerTarget * 10000) / basePerTarget1e18
+                    : (basePerTarget1e18 * 10000) / impliedBasePerTarget;
+                require(ratio <= maxPriceDeviationBps, "quoter deviation too large");
+                minOut = (quotedOut * (10_000 - slippageBps)) / 10_000;
+            } catch {
+                // Fallback: compute minOut via configured price (basePerTarget)
+                // targetOut ~= baseIn / price
+                minOut = (amountBase * (10_000 - slippageBps) * 1e18) / (10_000 * basePerTarget1e18);
+            }
+        } else {
+            // Quoter unset: fallback to configured price
+            minOut = (amountBase * (10_000 - slippageBps) * 1e18) / (10_000 * basePerTarget1e18);
         }
-
-        uint256 minOut = (quotedOut * (10_000 - slippageBps)) / 10_000;
 
         IUniswapV3Router.ExactInputSingleParams memory params = IUniswapV3Router.ExactInputSingleParams({
             tokenIn: tokenIn,
@@ -209,32 +215,37 @@ contract CrossAssetAaveStrategy is BaseStrategy {
     /// @dev Swap helper target->base
     function swapTargetToBase(uint256 amountTarget) internal returns (uint256 amountOut) {
         if (amountTarget == 0) return 0;
-        require(address(quoter) != address(0), "quoter unset");
         address tokenIn = targetVault.asset();
         address tokenOut = address(asset);
 
-        // Quote expected output
-        (uint256 quotedOut,,,) = quoter.quoteExactInputSingle(
-            IUniswapV3QuoterV2.QuoteExactInputSingleParams({
-                tokenIn: tokenIn,
-                tokenOut: tokenOut,
-                fee: poolFee,
-                amountIn: amountTarget,
-                sqrtPriceLimitX96: 0
-            })
-        );
-        require(quotedOut > 0, "quote=0");
-
-        // impliedBasePerTarget = baseOut / targetIn (scaled 1e18)
-        uint256 impliedBasePerTarget = (quotedOut * 1e18) / amountTarget;
-        {
-            uint256 ratio = impliedBasePerTarget > basePerTarget1e18
-                ? (impliedBasePerTarget * 10000) / basePerTarget1e18
-                : (basePerTarget1e18 * 10000) / impliedBasePerTarget;
-            require(ratio <= maxPriceDeviationBps, "quoter deviation too large");
+        uint256 minOut;
+        if (address(quoter) != address(0)) {
+            // Quote expected output
+            try quoter.quoteExactInputSingle(
+                IUniswapV3QuoterV2.QuoteExactInputSingleParams({
+                    tokenIn: tokenIn,
+                    tokenOut: tokenOut,
+                    fee: poolFee,
+                    amountIn: amountTarget,
+                    sqrtPriceLimitX96: 0
+                })
+            ) returns (uint256 quotedOut, uint160, uint32, uint256) {
+                require(quotedOut > 0, "quote=0");
+                // impliedBasePerTarget = baseOut / targetIn (scaled 1e18)
+                uint256 impliedBasePerTarget = (quotedOut * 1e18) / amountTarget;
+                uint256 ratio = impliedBasePerTarget > basePerTarget1e18
+                    ? (impliedBasePerTarget * 10000) / basePerTarget1e18
+                    : (basePerTarget1e18 * 10000) / impliedBasePerTarget;
+                require(ratio <= maxPriceDeviationBps, "quoter deviation too large");
+                minOut = (quotedOut * (10_000 - slippageBps)) / 10_000;
+            } catch {
+                // Fallback: baseOut ~= targetIn * price
+                minOut = (amountTarget * basePerTarget1e18 * (10_000 - slippageBps)) / (10_000 * 1e18);
+            }
+        } else {
+            // Quoter unset: fallback to configured price
+            minOut = (amountTarget * basePerTarget1e18 * (10_000 - slippageBps)) / (10_000 * 1e18);
         }
-
-        uint256 minOut = (quotedOut * (10_000 - slippageBps)) / 10_000;
 
         IUniswapV3Router.ExactInputSingleParams memory params = IUniswapV3Router.ExactInputSingleParams({
             tokenIn: tokenIn,
