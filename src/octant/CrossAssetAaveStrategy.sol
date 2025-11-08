@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {BaseStrategy} from "./BaseStrategy.sol";
 import {AjeyVault} from "../core/AjeyVault.sol";
 import {IUniswapV3Router} from "../interfaces/IUniswapV3Router.sol";
 import {IUniswapV3QuoterV2} from "../interfaces/IUniswapV3QuoterV2.sol";
 
 /// @title CrossAssetAaveStrategy
-/// @notice Cross-asset YDS that holds baseAsset shares but deploys into a target AjeyVault (different asset)
-/// @dev Swaps baseAsset -> targetAsset on deploy; targetAsset -> baseAsset on free. Values portfolio in baseAsset.
+/// @notice Cross-asset Yield-Donating Strategy that accepts a base asset from an MSV and deploys into a target AjeyVault
+/// @dev If base == target vault asset, swaps are skipped (same-asset path).
+///      Otherwise, swaps base->target on deploy and target->base on free via Uniswap V3.
+///      The strategy values its portfolio in base units and mints donation shares on profit in {BaseStrategy.report}.
 contract CrossAssetAaveStrategy is BaseStrategy {
     using SafeERC20 for IERC20;
 
@@ -43,12 +45,12 @@ contract CrossAssetAaveStrategy is BaseStrategy {
     event PriceLimitsUpdated(uint256 maxPriceDeviationBps);
     event QuoterUpdated(address quoter);
 
-    /// @param _baseAsset The MSV base asset held by the strategy holders
-    /// @param _donationAddress Donation address to receive minted shares on profit
-    /// @param _name ERC20 name
-    /// @param _symbol ERC20 symbol
-    /// @param _uniswapRouter Uniswap V3 router
-    /// @param _admin Management/keeper admin
+    /// @param _baseAsset The MSV base asset held by the strategy token
+    /// @param _donationAddress Donation address to receive minted shares on profit (e.g., PaymentSplitter)
+    /// @param _name ERC20 name for the strategy share token
+    /// @param _symbol ERC20 symbol for the strategy share token
+    /// @param _uniswapRouter Uniswap V3 router used for swaps
+    /// @param _admin Address granted DEFAULT_ADMIN, KEEPER, and MANAGEMENT roles
     constructor(
         address _baseAsset,
         address _donationAddress,
@@ -76,10 +78,11 @@ contract CrossAssetAaveStrategy is BaseStrategy {
         emit QuoterUpdated(_quoter);
     }
 
-    /// @notice Set target AjeyVault and swap parameters
+    /// @notice Set the target AjeyVault and swap parameters
+    /// @dev Also sets token approvals for router and vault. If base==target, swaps will be skipped.
     /// @param _targetVault AjeyVault that holds the target asset and supplies to Aave
-    /// @param _poolFee Uniswap V3 pool fee between base and target
-    /// @param _slippageBps Max slippage in bps for swaps
+    /// @param _poolFee Uniswap V3 pool fee tier between base and target
+    /// @param _slippageBps Max slippage in basis points for swaps (10000 = 100%)
     function setTargetMarket(AjeyVault _targetVault, uint24 _poolFee, uint256 _slippageBps)
         external
         onlyRole(MANAGEMENT_ROLE)
@@ -100,8 +103,8 @@ contract CrossAssetAaveStrategy is BaseStrategy {
         emit TargetMarketUpdated(address(_targetVault), _poolFee, _slippageBps);
     }
 
-    /// @notice Update price used to value targetAsset in baseAsset
-    /// @param _basePerTarget1e18 base units per 1 target unit, scaled by 1e18
+    /// @notice Update price used to value target asset in base units
+    /// @param _basePerTarget1e18 Base units per 1 target unit, scaled by 1e18 (keeper-updated, e.g., TWAP)
     function setPrice(uint256 _basePerTarget1e18) external onlyRole(KEEPER_ROLE) {
         require(_basePerTarget1e18 > 0, "price=0");
         if (basePerTarget1e18 > 0) {
@@ -173,11 +176,7 @@ contract CrossAssetAaveStrategy is BaseStrategy {
             // Quote expected output
             try quoter.quoteExactInputSingle(
                 IUniswapV3QuoterV2.QuoteExactInputSingleParams({
-                    tokenIn: tokenIn,
-                    tokenOut: tokenOut,
-                    fee: poolFee,
-                    amountIn: amountBase,
-                    sqrtPriceLimitX96: 0
+                    tokenIn: tokenIn, tokenOut: tokenOut, fee: poolFee, amountIn: amountBase, sqrtPriceLimitX96: 0
                 })
             ) returns (uint256 quotedOut, uint160, uint32, uint256) {
                 require(quotedOut > 0, "quote=0");
@@ -223,11 +222,7 @@ contract CrossAssetAaveStrategy is BaseStrategy {
             // Quote expected output
             try quoter.quoteExactInputSingle(
                 IUniswapV3QuoterV2.QuoteExactInputSingleParams({
-                    tokenIn: tokenIn,
-                    tokenOut: tokenOut,
-                    fee: poolFee,
-                    amountIn: amountTarget,
-                    sqrtPriceLimitX96: 0
+                    tokenIn: tokenIn, tokenOut: tokenOut, fee: poolFee, amountIn: amountTarget, sqrtPriceLimitX96: 0
                 })
             ) returns (uint256 quotedOut, uint160, uint32, uint256) {
                 require(quotedOut > 0, "quote=0");
@@ -261,41 +256,54 @@ contract CrossAssetAaveStrategy is BaseStrategy {
     }
 
     /// @inheritdoc BaseStrategy
+    /// @dev If base == target asset, deposit directly without swap and skip price/swap checks
     function _deployFunds(uint256 amount) internal override {
         if (amount == 0) return;
         require(address(targetVault) != address(0), "vault unset");
+        address base = address(asset);
+        address target = targetVault.asset();
+        if (base == target) {
+            IERC20(base).forceApprove(address(targetVault), amount);
+            targetVault.deposit(amount, address(this));
+            emit FundsDeployed(amount);
+            return;
+        }
         _requireSwapsActive();
         _validatePriceFreshness();
         require(amount <= maxSwapBaseAmount, "exceeds base limit");
-
-        // Swap base -> target, deposit target into AjeyVault
         uint256 targetReceived = swapBaseToTarget(amount);
         if (targetReceived > 0) {
             require(targetReceived <= maxSwapTargetAmount, "exceeds target limit");
-            IERC20(targetVault.asset()).forceApprove(address(targetVault), targetReceived);
+            IERC20(target).forceApprove(address(targetVault), targetReceived);
             targetVault.deposit(targetReceived, address(this));
             emit FundsDeployed(amount);
         }
     }
 
     /// @inheritdoc BaseStrategy
+    /// @dev If base == target asset, withdraw directly without swap and skip price/swap checks
     function _freeFunds(uint256 amount) internal override {
         if (amount == 0) return;
         require(address(targetVault) != address(0), "vault unset");
+        address base = address(asset);
+        address target = targetVault.asset();
+        if (base == target) {
+            targetVault.withdraw(amount, address(this), address(this));
+            emit FundsFreed(amount);
+            return;
+        }
         _requireSwapsActive();
         _validatePriceFreshness();
         require(amount <= maxSwapBaseAmount, "exceeds base limit");
-
-        // Compute how much target to withdraw to realize `amount` base
-        // Use pricing: base = target * basePerTarget1e18
         uint256 targetNeeded = (amount * 1e18 + basePerTarget1e18 - 1) / basePerTarget1e18; // ceil div
         require(targetNeeded <= maxSwapTargetAmount, "exceeds target limit");
-
         if (targetNeeded > 0) {
             targetVault.withdraw(targetNeeded, address(this), address(this));
-            uint256 baseOut = swapTargetToBase(IERC20(targetVault.asset()).balanceOf(address(this)));
-            // Transfer base to self; Base held idle for withdraw()
-            emit FundsFreed(baseOut);
+            uint256 targetBal = IERC20(target).balanceOf(address(this));
+            if (targetBal > 0) {
+                uint256 baseOut = swapTargetToBase(targetBal);
+                emit FundsFreed(baseOut);
+            }
         }
     }
 
@@ -306,7 +314,8 @@ contract CrossAssetAaveStrategy is BaseStrategy {
 
         // Get investable target amount valued in base using manager-updated price
         uint256 targetRedeemable = targetVault.maxWithdraw(address(this));
-        uint256 targetAsBase = (targetRedeemable * basePerTarget1e18) / 1e18;
+        uint256 targetAsBase =
+            targetVault.asset() == address(asset) ? targetRedeemable : (targetRedeemable * basePerTarget1e18) / 1e18;
         return idleBase + targetAsBase;
     }
 }

@@ -4,13 +4,12 @@ out = "out"
 libs = ["lib"]
 
 # Compiler and remappings
-solc_version = "0.8.24"
+solc_version = "0.8.26"
 auto_detect_remappings = false
 remappings = [
-    "@openzeppelin/=lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/=lib/openzeppelin-contracts/",
     "forge-std/=lib/forge-std/src/",
     "@octant-core/=lib/octant-v2-core/src/",
-
 ]
 
 # Optimizer settings

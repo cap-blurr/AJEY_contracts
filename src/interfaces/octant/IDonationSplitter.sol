@@ -8,4 +8,3 @@ interface IDonationSplitter {
     function receiveShares(address token, uint256 amount) external;
 }
 
-

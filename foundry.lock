@@ -15,10 +15,7 @@
     }
   },
   "lib/octant-v2-core": {
-    "tag": {
-      "name": "v0.1.2",
-      "rev": "8fcc0183bd92b0f898417e81ad385ab0a834c22f"
-    }
+    "rev": "58d698ee0cb0a7c993c92adc6239f22ed5140ac2"
   },
   "lib/octant-v2-strategy-foundry-mix": {
     "rev": "ddd405c18bb0c765c0256ca952d4d9f4034cf3ec"

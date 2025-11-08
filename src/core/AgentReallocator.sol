@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
-import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
-import {IERC4626} from "@openzeppelin/interfaces/IERC4626.sol";
-import {IBaseStrategy} from "../interfaces/IBaseStrategy.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 /// @title AgentReallocator
-/// @notice Orchestrates migrations between vaults and YDS strategies with optional swaps
-/// @dev Enhanced to support both direct vault migrations and YDS strategy reallocation
+/// @notice Orchestrates user-approved migrations between ERC-4626 vaults with optional off-chain swap aggregator
+/// @dev Strategy-level reallocation is disabled in MSV architecture. Use MSV.updateDebt for strategy rebalances.
 contract AgentReallocator is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -19,12 +18,8 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
     // Whitelisted swap aggregators
     mapping(address => bool) public isAggregator;
 
-    // Whitelisted strategies for direct reallocation
-    mapping(address => bool) public isStrategy;
-
     // Events
     event AggregatorUpdated(address indexed aggregator, bool allowed);
-    event StrategyUpdated(address indexed strategy, bool allowed);
     event Migrated(
         address indexed owner,
         address indexed receiver,
@@ -37,7 +32,6 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
         uint256 assetsTo,
         uint256 targetSharesOut
     );
-    event StrategyReallocated(address indexed fromStrategy, address indexed toStrategy, uint256 amount);
 
     /// @notice Constructor
     /// @param admin Admin address
@@ -55,13 +49,7 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
         emit AggregatorUpdated(aggregator, allowed);
     }
 
-    /// @notice Set strategy whitelist status
-    /// @param strategy Strategy address
-    /// @param allowed Whether allowed
-    function setStrategy(address strategy, bool allowed) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        isStrategy[strategy] = allowed;
-        emit StrategyUpdated(strategy, allowed);
-    }
+    // (no strategy whitelist; strategies are rebalanced via MSV, not here)
 
     /// @notice Migrate between ERC-4626 vaults with optional swap
     /// @param owner Share owner
@@ -124,37 +112,7 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
         );
     }
 
-    /// @notice Reallocate between YDS strategies
-    /// @param fromStrategy Source strategy
-    /// @param toStrategy Target strategy
-    /// @param amount Amount to reallocate
-    /// @param owner Address whose strategy shares will be burned on withdrawal and who will receive new shares
-    function reallocateStrategies(address owner, address fromStrategy, address toStrategy, uint256 amount)
-        external
-        onlyRole(AGENT_ROLE)
-        nonReentrant
-    {
-        require(owner != address(0), "owner=0");
-        require(isStrategy[fromStrategy], "from not whitelisted");
-        require(isStrategy[toStrategy], "to not whitelisted");
-        require(amount > 0, "zero amount");
-
-        // Strategies must have same underlying for direct reallocation
-        address assetFrom = IBaseStrategy(fromStrategy).asset();
-        address assetTo = IBaseStrategy(toStrategy).asset();
-        require(assetFrom == assetTo, "asset mismatch");
-
-        // Withdraw from source strategy
-        // Requires that `owner` has approved this contract to spend sufficient shares
-        IBaseStrategy(fromStrategy).withdraw(amount, address(this), owner);
-
-        // Deposit to target strategy
-        IERC20(assetFrom).forceApprove(toStrategy, amount);
-        // Mint new strategy shares to the original owner
-        IBaseStrategy(toStrategy).deposit(amount, owner);
-
-        emit StrategyReallocated(fromStrategy, toStrategy, amount);
-    }
+    // (strategy-level reallocation removed)
 
     /// @notice Internal swap function
     /// @param assetFrom Source asset

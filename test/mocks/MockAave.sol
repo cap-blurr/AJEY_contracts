@@ -2,8 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {IAaveV3Pool} from "../../src/interfaces/IAaveV3Pool.sol";
-import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {MockAToken} from "./MockTokens.sol";
 
 contract MockAaveV3Pool is IAaveV3Pool {

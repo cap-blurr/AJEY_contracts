@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
-import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IBaseStrategy} from "../interfaces/IBaseStrategy.sol";
 import {IUniswapV3Router} from "../interfaces/IUniswapV3Router.sol";
 import {AjeyVault} from "../core/AjeyVault.sol";
-import {YDS_AaveWETH} from "./YDS_AaveWETH.sol";
-import {YDS_AaveUSDC} from "./YDS_AaveUSDC.sol";
+import {CrossAssetAaveStrategy} from "./CrossAssetAaveStrategy.sol";
 
 /// @title AgentOrchestrator
 /// @notice Orchestrates all agent operations across YDS strategies and vaults
@@ -24,16 +23,16 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
     address public immutable weth;
     address public immutable usdc;
 
-    // Strategies
-    address public ydsWETH;
-    address public ydsUSDC;
+    // Cross-asset strategies (per MSV base asset)
+    address public strategyWETH;
+    address public strategyUSDC;
 
     // Configuration
     uint24 public constant POOL_FEE = 3000; // 0.3% fee tier
     uint256 public constant SLIPPAGE_TOLERANCE = 9500; // 95% (5% slippage)
 
     // Events
-    event StrategiesUpdated(address ydsWETH, address ydsUSDC);
+    event StrategiesUpdated(address strategyWETH, address strategyUSDC);
     event Reallocated(address from, address to, uint256 amount);
     event YieldHarvested(address strategy, uint256 profit, uint256 loss);
     event AaveSupplyTriggered(address vault, uint256 amount);
@@ -58,12 +57,12 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
         usdc = _usdc;
     }
 
-    /// @notice Set YDS strategy addresses
+    /// @notice Set cross-asset strategy addresses
     /// @param _ydsWETH WETH YDS address
     /// @param _ydsUSDC USDC YDS address
     function setStrategies(address _ydsWETH, address _ydsUSDC) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        ydsWETH = _ydsWETH;
-        ydsUSDC = _ydsUSDC;
+        strategyWETH = _ydsWETH;
+        strategyUSDC = _ydsUSDC;
         emit StrategiesUpdated(_ydsWETH, _ydsUSDC);
     }
 
@@ -84,9 +83,8 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
     /// @param isWETH True for WETH vault, false for USDC
     /// @param amount Amount to supply
     function triggerAaveSupply(bool isWETH, uint256 amount) external onlyRole(AGENT_ROLE) {
-        address strategy = isWETH ? ydsWETH : ydsUSDC;
-        address payable vaultAddr =
-            payable(isWETH ? YDS_AaveWETH(strategy).ajeyVault() : YDS_AaveUSDC(strategy).ajeyVault());
+        address strategy = isWETH ? strategyWETH : strategyUSDC;
+        address payable vaultAddr = payable(CrossAssetAaveStrategy(strategy).targetVault());
         AjeyVault vault = AjeyVault(vaultAddr);
 
         vault.supplyToAave(amount);
@@ -97,9 +95,8 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
     /// @param isWETH True for WETH vault, false for USDC
     /// @param amount Amount to withdraw
     function triggerAaveWithdraw(bool isWETH, uint256 amount) external onlyRole(AGENT_ROLE) {
-        address strategy = isWETH ? ydsWETH : ydsUSDC;
-        address payable vaultAddr =
-            payable(isWETH ? YDS_AaveWETH(strategy).ajeyVault() : YDS_AaveUSDC(strategy).ajeyVault());
+        address strategy = isWETH ? strategyWETH : strategyUSDC;
+        address payable vaultAddr = payable(CrossAssetAaveStrategy(strategy).targetVault());
         AjeyVault vault = AjeyVault(vaultAddr);
 
         vault.withdrawFromAave(amount);
@@ -108,8 +105,8 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
 
     /// @notice Harvest yield from all strategies
     function harvestAll() external onlyRole(AGENT_ROLE) {
-        _harvestStrategy(ydsWETH);
-        _harvestStrategy(ydsUSDC);
+        _harvestStrategy(strategyWETH);
+        _harvestStrategy(strategyUSDC);
     }
 
     /// @notice Harvest yield from a specific strategy

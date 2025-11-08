@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {ERC20} from "@openzeppelin/token/ERC20/ERC20.sol";
-import {ERC4626} from "@openzeppelin/token/ERC20/extensions/ERC4626.sol";
-import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/token/ERC20/extensions/IERC20Metadata.sol";
-import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
-import {Pausable} from "@openzeppelin/utils/Pausable.sol";
-import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
-import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {IAaveV3Pool} from "../interfaces/IAaveV3Pool.sol";
 import {IWETHGateway} from "../interfaces/IWETHGateway.sol";
@@ -36,7 +36,7 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     IWETHGateway public ethGateway;
     bool public ethMode;
 
-    // Auto-supply toggle: when enabled, deposits auto-supply idle to Aave
+    /// @notice Auto-supply toggle: when enabled, deposits auto-supply any post-deposit idle to Aave
     bool public autoSupply;
 
     // --- Accounting ---
@@ -101,6 +101,8 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /// @notice Enable or disable auto-supply of idle underlying to Aave after deposits
+    /// @dev When enabled, after an ERC-4626 deposit/mint the contract supplies any idle underlying to Aave.
+    ///      This does not affect allocation decisions; strategies and MSV still control which vault receives funds.
     /// @param enabled True to enable, false to disable
     function setAutoSupply(bool enabled) external onlyRole(DEFAULT_ADMIN_ROLE) {
         autoSupply = enabled;
