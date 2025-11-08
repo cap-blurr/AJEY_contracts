@@ -8,7 +8,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IBaseStrategy} from "../interfaces/IBaseStrategy.sol";
 import {IUniswapV3Router} from "../interfaces/IUniswapV3Router.sol";
 import {AjeyVault} from "../core/AjeyVault.sol";
-import {CrossAssetAaveStrategy} from "./CrossAssetAaveStrategy.sol";
+import {AaveYieldDonatingStrategy} from "./AaveYieldDonatingStrategy.sol";
 
 /// @title AgentOrchestrator
 /// @notice Orchestrates all agent operations across YDS strategies and vaults
@@ -20,93 +20,80 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
 
     // Core components
     IUniswapV3Router public immutable uniswapRouter;
-    address public immutable weth;
-    address public immutable usdc;
+    uint24 public immutable defaultPoolFee; // default pool fee used for direct token→token swaps
 
-    // Cross-asset strategies (per MSV base asset)
-    address public strategyWETH;
-    address public strategyUSDC;
+    // Donation profiles
+    enum Profile {
+        Balanced,
+        MaxHumanitarian,
+        MaxCrypto
+    }
+
+    // Strategy registry per profile per asset: profile => (asset => strategy)
+    mapping(Profile => mapping(address => address)) public strategyOf;
 
     // Configuration
-    uint24 public constant POOL_FEE = 3000; // 0.3% fee tier
-    uint256 public constant SLIPPAGE_TOLERANCE = 9500; // 95% (5% slippage)
+    uint256 public constant SLIPPAGE_TOLERANCE = 9500; // 95% (5% slippage) - informative default, callers pass minOut
 
     // Events
-    event StrategiesUpdated(address strategyWETH, address strategyUSDC);
-    event Reallocated(address from, address to, uint256 amount);
+    event StrategySet(Profile indexed profile, address indexed asset, address indexed strategy);
+    event Deposited(
+        Profile indexed profile,
+        address indexed from,
+        address indexed assetIn,
+        address assetTarget,
+        uint256 amountIn,
+        uint256 sharesOut,
+        address receiver
+    );
+    event Withdrawn(
+        Profile indexed profile,
+        address indexed owner,
+        address indexed assetStrategy,
+        address assetOut,
+        uint256 assetsBurned,
+        uint256 amountOut,
+        address receiver
+    );
+    event Reallocated(
+        Profile indexed profile,
+        address indexed owner,
+        address indexed sourceAsset,
+        address targetAsset,
+        uint256 sharesMoved,
+        uint256 amountSwapped
+    );
     event YieldHarvested(address strategy, uint256 profit, uint256 loss);
-    event AaveSupplyTriggered(address vault, uint256 amount);
-    event AaveWithdrawTriggered(address vault, uint256 amount);
 
     /// @notice Constructor
     /// @param _admin Admin address
     /// @param _agent Agent address
     /// @param _uniswapRouter Uniswap V3 router address
-    /// @param _weth WETH address
-    /// @param _usdc USDC address
-    constructor(address _admin, address _agent, address _uniswapRouter, address _weth, address _usdc) {
+    /// @param _defaultPoolFee Default Uniswap V3 pool fee (e.g., 3000 for 0.3%)
+    constructor(address _admin, address _agent, address _uniswapRouter, uint24 _defaultPoolFee) {
         require(_uniswapRouter != address(0), "router=0");
-        require(_weth != address(0), "weth=0");
-        require(_usdc != address(0), "usdc=0");
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(AGENT_ROLE, _agent);
 
         uniswapRouter = IUniswapV3Router(_uniswapRouter);
-        weth = _weth;
-        usdc = _usdc;
+        defaultPoolFee = _defaultPoolFee;
     }
 
-    /// @notice Set cross-asset strategy addresses
-    /// @param _ydsWETH WETH YDS address
-    /// @param _ydsUSDC USDC YDS address
-    function setStrategies(address _ydsWETH, address _ydsUSDC) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        strategyWETH = _ydsWETH;
-        strategyUSDC = _ydsUSDC;
-        emit StrategiesUpdated(_ydsWETH, _ydsUSDC);
-    }
-
-    /// @notice Reallocate funds between WETH and USDC strategies
-    /// @param fromWETH True if moving from WETH to USDC, false for opposite
-    /// @param amount Amount to reallocate (in source asset)
-    /// @param minAmountOut Minimum amount to receive (slippage protection)
-    function reallocate(bool fromWETH, uint256 amount, uint256 minAmountOut)
-        external
-        onlyRole(AGENT_ROLE)
-        nonReentrant
-    {
-        // Disabled until a Multi-Strategy Vault or equivalent ownership model is adopted
-        revert("reallocate disabled: requires MSV ownership model");
-    }
-
-    /// @notice Trigger Aave supply for a specific vault
-    /// @param isWETH True for WETH vault, false for USDC
-    /// @param amount Amount to supply
-    function triggerAaveSupply(bool isWETH, uint256 amount) external onlyRole(AGENT_ROLE) {
-        address strategy = isWETH ? strategyWETH : strategyUSDC;
-        address payable vaultAddr = payable(CrossAssetAaveStrategy(strategy).targetVault());
-        AjeyVault vault = AjeyVault(vaultAddr);
-
-        vault.supplyToAave(amount);
-        emit AaveSupplyTriggered(address(vault), amount);
-    }
-
-    /// @notice Trigger Aave withdrawal for a specific vault
-    /// @param isWETH True for WETH vault, false for USDC
-    /// @param amount Amount to withdraw
-    function triggerAaveWithdraw(bool isWETH, uint256 amount) external onlyRole(AGENT_ROLE) {
-        address strategy = isWETH ? strategyWETH : strategyUSDC;
-        address payable vaultAddr = payable(CrossAssetAaveStrategy(strategy).targetVault());
-        AjeyVault vault = AjeyVault(vaultAddr);
-
-        vault.withdrawFromAave(amount);
-        emit AaveWithdrawTriggered(address(vault), amount);
+    /// @notice Register a YDS strategy for a given (profile, asset)
+    /// @param profile Donation profile
+    /// @param asset ERC20 asset address
+    /// @param strategy Strategy address handling the asset
+    function setStrategy(Profile profile, address asset, address strategy) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(asset != address(0) && strategy != address(0), "bad addr");
+        require(IBaseStrategy(strategy).asset() == asset, "mismatch");
+        strategyOf[profile][asset] = strategy;
+        emit StrategySet(profile, asset, strategy);
     }
 
     /// @notice Harvest yield from all strategies
     function harvestAll() external onlyRole(AGENT_ROLE) {
-        _harvestStrategy(strategyWETH);
-        _harvestStrategy(strategyUSDC);
+        // No-op placeholder: in production you would enumerate strategies by profile and asset
     }
 
     /// @notice Harvest yield from a specific strategy
@@ -124,23 +111,169 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
         emit YieldHarvested(strategy, profit, loss);
     }
 
-    /// @notice Calculate shares needed for a given asset amount
-    /// @param strategy Strategy address
-    /// @param assets Asset amount
-    /// @return shares Share amount
-    function _calculateSharesForAssets(address strategy, uint256 assets) internal view returns (uint256) {
-        uint256 totalAssets = IBaseStrategy(strategy).totalAssets();
-        uint256 totalSupply = IERC20(strategy).totalSupply();
+    /// @notice Deposit ERC20 on behalf of a user, optionally swap to target asset, then deposit into the (profile, targetAsset) strategy
+    /// @param profile Donation profile to route into
+    /// @param from The user whose tokens are being deposited
+    /// @param inputAsset The asset provided by the user
+    /// @param amountIn Amount of inputAsset to deposit
+    /// @param targetAsset The strategy's asset to deposit into
+    /// @param minAmountOut Minimum amount after swap (if inputAsset != targetAsset)
+    /// @param receiver Receiver of the strategy shares
+    /// @return sharesOut Strategy shares minted to receiver
+    function depositERC20(
+        Profile profile,
+        address from,
+        address inputAsset,
+        uint256 amountIn,
+        address targetAsset,
+        uint256 minAmountOut,
+        address receiver
+    ) external onlyRole(AGENT_ROLE) nonReentrant returns (uint256 sharesOut) {
+        require(from != address(0) && receiver != address(0), "bad addr");
+        require(amountIn > 0, "zero amount");
+        address strategy = strategyOf[profile][targetAsset];
+        require(strategy != address(0), "no target strategy");
 
-        if (totalSupply == 0) return assets;
-        return (assets * totalSupply) / totalAssets;
+        // Pull tokens from user
+        IERC20(inputAsset).safeTransferFrom(from, address(this), amountIn);
+
+        uint256 amountToDeposit;
+        if (inputAsset == targetAsset) {
+            amountToDeposit = amountIn;
+        } else {
+            // Approve router and perform direct pool swap
+            IERC20(inputAsset).forceApprove(address(uniswapRouter), amountIn);
+            IUniswapV3Router.ExactInputSingleParams memory params = IUniswapV3Router.ExactInputSingleParams({
+                tokenIn: inputAsset,
+                tokenOut: targetAsset,
+                fee: defaultPoolFee,
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: amountIn,
+                amountOutMinimum: minAmountOut,
+                sqrtPriceLimitX96: 0
+            });
+            amountToDeposit = uniswapRouter.exactInputSingle{value: 0}(params);
+        }
+
+        // Approve strategy to pull funds and deposit for receiver
+        IERC20(targetAsset).forceApprove(strategy, amountToDeposit);
+        sharesOut = IBaseStrategy(strategy).deposit(amountToDeposit, receiver);
+
+        emit Deposited(profile, from, inputAsset, targetAsset, amountIn, sharesOut, receiver);
     }
 
-    /// @notice Emergency withdraw from strategies
-    /// @param strategy Strategy address
-    /// @param amount Amount to withdraw
-    function emergencyWithdraw(address strategy, uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        IBaseStrategy(strategy).withdraw(amount, msg.sender, strategy);
+    /// @notice Withdraw from a (profile, asset) strategy on behalf of a user to a desired asset (optional swap), transfer to receiver
+    /// @param profile Donation profile of the strategy
+    /// @param owner The owner of the strategy shares (must have approved this contract to burn shares)
+    /// @param strategyAsset The asset handled by the source strategy
+    /// @param assets Amount of strategyAsset to withdraw from the strategy
+    /// @param outputAsset The asset to send to the receiver
+    /// @param minAmountOut Minimum amount after swap (if strategyAsset != outputAsset)
+    /// @param receiver Recipient of the output asset
+    /// @return amountOut Final output amount sent to receiver
+    function withdrawERC20(
+        Profile profile,
+        address owner,
+        address strategyAsset,
+        uint256 assets,
+        address outputAsset,
+        uint256 minAmountOut,
+        address receiver
+    ) external onlyRole(AGENT_ROLE) nonReentrant returns (uint256 amountOut) {
+        require(owner != address(0) && receiver != address(0), "bad addr");
+        require(assets > 0, "zero assets");
+        address strategy = strategyOf[profile][strategyAsset];
+        require(strategy != address(0), "no strategy");
+
+        // Withdraw underlying to this contract (burns owner's shares internally)
+        IBaseStrategy(strategy).withdraw(assets, address(this), owner);
+
+        if (strategyAsset == outputAsset) {
+            amountOut = assets;
+            IERC20(outputAsset).safeTransfer(receiver, amountOut);
+        } else {
+            // Swap
+            IERC20(strategyAsset).forceApprove(address(uniswapRouter), assets);
+            IUniswapV3Router.ExactInputSingleParams memory params = IUniswapV3Router.ExactInputSingleParams({
+                tokenIn: strategyAsset,
+                tokenOut: outputAsset,
+                fee: defaultPoolFee,
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: assets,
+                amountOutMinimum: minAmountOut,
+                sqrtPriceLimitX96: 0
+            });
+            amountOut = uniswapRouter.exactInputSingle{value: 0}(params);
+            IERC20(outputAsset).safeTransfer(receiver, amountOut);
+        }
+
+        emit Withdrawn(profile, owner, strategyAsset, outputAsset, assets, amountOut, receiver);
+    }
+
+    /// @notice Reallocate a user's position across assets within the same profile
+    /// @dev Sequence: report() -> compute assets from shares -> withdraw -> swap -> deposit
+    /// @param profile Donation profile
+    /// @param owner Position owner
+    /// @param sourceAsset Source strategy asset
+    /// @param targetAsset Target strategy asset
+    /// @param shares Amount of source strategy shares to migrate
+    /// @param minAmountOut Minimum amount expected after the swap
+    function reallocate(
+        Profile profile,
+        address owner,
+        address sourceAsset,
+        address targetAsset,
+        uint256 shares,
+        uint256 minAmountOut
+    ) external onlyRole(AGENT_ROLE) nonReentrant {
+        require(owner != address(0), "owner=0");
+        require(sourceAsset != address(0) && targetAsset != address(0), "asset=0");
+        require(sourceAsset != targetAsset, "same asset");
+        require(shares > 0, "zero shares");
+
+        address sourceStrategy = strategyOf[profile][sourceAsset];
+        address targetStrategy = strategyOf[profile][targetAsset];
+        require(sourceStrategy != address(0) && targetStrategy != address(0), "no strategy");
+
+        // 1) Realize P/L for correct donation accrual
+        try IBaseStrategy(sourceStrategy).report() {} catch {}
+
+        // 2) Compute assets equivalent for the share amount
+        uint256 totalAssets = IBaseStrategy(sourceStrategy).totalAssets();
+        uint256 totalSupply = IERC20(sourceStrategy).totalSupply();
+        require(totalSupply > 0, "empty source");
+        uint256 assetsFrom = (shares * totalAssets) / totalSupply;
+        require(assetsFrom > 0, "zero assetsFrom");
+
+        // 3) Withdraw underlying from source (burn owner's shares)
+        IBaseStrategy(sourceStrategy).withdraw(assetsFrom, address(this), owner);
+
+        // 4) Swap sourceAsset -> targetAsset if needed
+        uint256 amountToDeposit;
+        if (sourceAsset == targetAsset) {
+            amountToDeposit = assetsFrom;
+        } else {
+            IERC20(sourceAsset).forceApprove(address(uniswapRouter), assetsFrom);
+            IUniswapV3Router.ExactInputSingleParams memory params = IUniswapV3Router.ExactInputSingleParams({
+                tokenIn: sourceAsset,
+                tokenOut: targetAsset,
+                fee: defaultPoolFee,
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: assetsFrom,
+                amountOutMinimum: minAmountOut,
+                sqrtPriceLimitX96: 0
+            });
+            amountToDeposit = uniswapRouter.exactInputSingle{value: 0}(params);
+        }
+
+        // 5) Deposit into target strategy for owner
+        IERC20(targetAsset).forceApprove(targetStrategy, amountToDeposit);
+        IBaseStrategy(targetStrategy).deposit(amountToDeposit, owner);
+
+        emit Reallocated(profile, owner, sourceAsset, targetAsset, shares, amountToDeposit);
     }
 
     /// @notice Add an agent

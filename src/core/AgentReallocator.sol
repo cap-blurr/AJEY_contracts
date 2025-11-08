@@ -5,11 +5,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {IBaseStrategy} from "../interfaces/IBaseStrategy.sol";
 
 /// @title AgentReallocator
-/// @notice Orchestrates user-approved migrations between ERC-4626 vaults with optional off-chain swap aggregator
-/// @dev Strategy-level reallocation is disabled in MSV architecture. Use MSV.updateDebt for strategy rebalances.
+/// @notice Orchestrates user-approved migrations between YDS strategies with optional off-chain swap aggregator
+/// @dev Operates at the periphery layer to respect single-source strategy invariant. Swaps occur via whitelisted aggregators.
 contract AgentReallocator is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -20,13 +20,10 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
 
     // Events
     event AggregatorUpdated(address indexed aggregator, bool allowed);
-    event Migrated(
+    event StrategyMigrated(
         address indexed owner,
-        address indexed receiver,
-        address indexed sourceVault,
-        address targetVault,
-        address assetFrom,
-        address assetTo,
+        address indexed sourceStrategy,
+        address indexed targetStrategy,
         uint256 sharesIn,
         uint256 assetsFrom,
         uint256 assetsTo,
@@ -49,19 +46,69 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
         emit AggregatorUpdated(aggregator, allowed);
     }
 
-    // (no strategy whitelist; strategies are rebalanced via MSV, not here)
+    /// @notice Migrate between YDS strategies with optional swap via aggregator
+    /// @dev Calls report() on the source to realize P/L before migration, computes assets from shares, performs withdraw, optional swap, then deposit.
+    ///      Assumes the owner has approved this contract to spend at least `shares` of the source strategy share token.
+    /// @param owner Share owner (and receiver of new target shares)
+    /// @param sourceStrategy Source YDS strategy
+    /// @param targetStrategy Target YDS strategy
+    /// @param shares Number of source strategy shares to migrate
+    /// @param aggregator Whitelisted aggregator address (zero for no swap)
+    /// @param swapCalldata Encoded calldata for aggregator call
+    /// @param minAmountOut Minimum amount expected from the swap (slippage guard)
+    /// @param deadline Unix timestamp after which this operation is invalid
+    /// @return targetSharesOut Amount of target strategy shares minted to owner
+    function migrateStrategyShares(
+        address owner,
+        address sourceStrategy,
+        address targetStrategy,
+        uint256 shares,
+        address aggregator,
+        bytes calldata swapCalldata,
+        uint256 minAmountOut,
+        uint256 deadline
+    ) public nonReentrant returns (uint256 targetSharesOut) {
+        require(msg.sender == owner || hasRole(AGENT_ROLE, msg.sender), "not owner/agent");
+        require(block.timestamp <= deadline, "expired");
+        require(owner != address(0), "owner=0");
+        require(sourceStrategy != address(0) && targetStrategy != address(0), "bad strategy");
+        require(sourceStrategy != targetStrategy, "same strategy");
+        require(shares > 0, "zero shares");
 
-    /// @notice Migrate between ERC-4626 vaults with optional swap
-    /// @param owner Share owner
-    /// @param receiver Share recipient
-    /// @param sourceVault Source vault
-    /// @param targetVault Target vault
-    /// @param shares Shares to migrate
-    /// @param aggregator Swap aggregator (0 for no swap)
-    /// @param swapCalldata Swap calldata
-    /// @param minAmountOut Minimum output
-    /// @param deadline Deadline timestamp
-    /// @return targetSharesOut Shares received
+        // Realize pending profit/loss for clean donation accounting
+        try IBaseStrategy(sourceStrategy).report() {} catch {}
+
+        // Compute assets represented by shares: assets = shares * totalAssets / totalSupply
+        uint256 totalAssets = IBaseStrategy(sourceStrategy).totalAssets();
+        uint256 totalSupply = IERC20(sourceStrategy).totalSupply();
+        require(totalSupply > 0, "source empty");
+        uint256 assetsFrom = (shares * totalAssets) / totalSupply;
+        require(assetsFrom > 0, "zero assetsFrom");
+
+        address assetFrom = IBaseStrategy(sourceStrategy).asset();
+        address assetTo = IBaseStrategy(targetStrategy).asset();
+
+        // Withdraw underlying from source (burns owner's shares inside)
+        IBaseStrategy(sourceStrategy).withdraw(assetsFrom, address(this), owner);
+
+        uint256 amountToDeposit;
+        if (assetFrom == assetTo) {
+            amountToDeposit = assetsFrom;
+        } else {
+            amountToDeposit = _swapAssets(assetFrom, assetTo, assetsFrom, aggregator, swapCalldata, minAmountOut);
+        }
+
+        // Approve and deposit to target strategy for the owner
+        IERC20(assetTo).forceApprove(targetStrategy, amountToDeposit);
+        targetSharesOut = IBaseStrategy(targetStrategy).deposit(amountToDeposit, owner);
+
+        emit StrategyMigrated(
+            owner, sourceStrategy, targetStrategy, shares, assetsFrom, amountToDeposit, targetSharesOut
+        );
+    }
+
+    /// @notice Legacy wrapper for migrateShares (vault-based) to preserve compilation/tests
+    /// @dev Expects sourceVault/targetVault to actually be strategy addresses in the new architecture
     function migrateShares(
         address owner,
         address receiver,
@@ -74,45 +121,10 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
         uint256 deadline
     ) external nonReentrant returns (uint256 targetSharesOut) {
         require(receiver == owner, "receiver!=owner");
-        require(msg.sender == owner || hasRole(AGENT_ROLE, msg.sender), "not owner/agent");
-        require(block.timestamp <= deadline, "expired");
-        require(owner != address(0) && receiver != address(0), "bad addr");
-        require(sourceVault != address(0) && targetVault != address(0), "bad vault");
-        require(sourceVault != targetVault, "same vault");
-        require(shares > 0, "zero shares");
-
-        address assetFrom = IERC4626(sourceVault).asset();
-        address assetTo = IERC4626(targetVault).asset();
-
-        // Redeem from source
-        uint256 assetsFrom = IERC4626(sourceVault).redeem(shares, address(this), owner);
-
-        uint256 amountToDeposit;
-        if (assetFrom == assetTo) {
-            amountToDeposit = assetsFrom;
-        } else {
-            amountToDeposit = _swapAssets(assetFrom, assetTo, assetsFrom, aggregator, swapCalldata, minAmountOut);
-        }
-
-        // Deposit to target
-        IERC20(assetTo).forceApprove(targetVault, amountToDeposit);
-        targetSharesOut = IERC4626(targetVault).deposit(amountToDeposit, receiver);
-
-        emit Migrated(
-            owner,
-            receiver,
-            sourceVault,
-            targetVault,
-            assetFrom,
-            assetTo,
-            shares,
-            assetsFrom,
-            amountToDeposit,
-            targetSharesOut
+        return migrateStrategyShares(
+            owner, sourceVault, targetVault, shares, aggregator, swapCalldata, minAmountOut, deadline
         );
     }
-
-    // (strategy-level reallocation removed)
 
     /// @notice Internal swap function
     /// @param assetFrom Source asset
