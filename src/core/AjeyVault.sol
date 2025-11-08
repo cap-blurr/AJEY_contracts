@@ -38,6 +38,8 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice Auto-supply toggle: when enabled, deposits auto-supply any post-deposit idle to Aave
     bool public autoSupply;
+    /// @notice Whether public deposits are enabled. If false, only addresses with STRATEGY_ROLE may deposit.
+    bool public publicDepositsEnabled;
 
     // --- Accounting ---
     uint256 public lastCheckpointAssets;
@@ -51,6 +53,9 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     event Checkpointed(uint256 assets, uint256 timestamp);
     event StrategyAdded(address indexed strategy);
     event StrategyRemoved(address indexed strategy);
+    /// @notice Emitted when public deposit mode is updated
+    /// @param enabled New status for public deposits
+    event PublicDepositsUpdated(bool enabled);
 
     /// @notice Constructor
     /// @param asset_ Underlying asset
@@ -84,6 +89,9 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
 
         // Max approval for Aave
         UNDERLYING.forceApprove(address(aavePool), type(uint256).max);
+
+        // Default to public deposits enabled to preserve existing behavior.
+        publicDepositsEnabled = true;
     }
 
     // --- Admin Functions ---
@@ -106,6 +114,14 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     /// @param enabled True to enable, false to disable
     function setAutoSupply(bool enabled) external onlyRole(DEFAULT_ADMIN_ROLE) {
         autoSupply = enabled;
+    }
+
+    /// @notice Enable or disable public deposits
+    /// @dev If disabled, only callers holding STRATEGY_ROLE may deposit/mint
+    /// @param enabled True to allow anyone to deposit/mint; false to restrict to strategies
+    function setPublicDepositsEnabled(bool enabled) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        publicDepositsEnabled = enabled;
+        emit PublicDepositsUpdated(enabled);
     }
 
     /// @notice Add a strategy that can interact with this vault
@@ -165,8 +181,8 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         nonReentrant
         returns (uint256 shares)
     {
-        // Allow both public deposits and strategy deposits
-        require(!hasRole(STRATEGY_ROLE, address(0)) || hasRole(STRATEGY_ROLE, msg.sender), "strategy only");
+        // Gate deposits if public deposits are disabled
+        require(publicDepositsEnabled || hasRole(STRATEGY_ROLE, msg.sender), "strategy only");
         shares = super.deposit(assets, receiver);
         if (autoSupply) {
             uint256 idle = UNDERLYING.balanceOf(address(this));
@@ -342,6 +358,14 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         IWETH(address(UNDERLYING)).deposit{value: assets}();
         _mint(receiver, shares);
         emit Deposit(msg.sender, receiver, assets, shares);
+
+        // Mirror ERC-4626 deposit behavior: auto-supply any idle to Aave if enabled
+        if (autoSupply) {
+            uint256 idle = UNDERLYING.balanceOf(address(this));
+            if (idle > 0) {
+                aavePool.supply(address(UNDERLYING), idle, address(this), 0);
+            }
+        }
     }
 
     /// @notice Withdraw ETH directly
@@ -373,7 +397,8 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         }
 
         IWETH(address(UNDERLYING)).withdraw(assets);
-        (bool ok,) = payable(receiver).call{value: assets, gas: 10000}("");
+        // Forward all available gas to the receiver to reduce risk of unexpected failures
+        (bool ok,) = payable(receiver).call{value: assets}("");
         require(ok, "ETH send failed");
 
         emit Withdraw(msg.sender, receiver, owner, assets, shares);

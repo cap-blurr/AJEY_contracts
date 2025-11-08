@@ -81,8 +81,10 @@ abstract contract BaseStrategy is ERC20, AccessControl, ReentrancyGuard {
     /// @param owner Address whose shares to burn
     /// @return shares Amount of shares burned
     function withdraw(uint256 assets, address receiver, address owner) public nonReentrant returns (uint256 shares) {
-        // Calculate shares needed
-        shares = (assets * totalSupply()) / totalAssets();
+        // Calculate shares needed (ROUND UP to avoid under-burning)
+        uint256 _totalSupply = totalSupply();
+        uint256 _totalAssets = totalAssets();
+        shares = (assets * _totalSupply + (_totalAssets - 1)) / _totalAssets;
 
         // Check allowance if not owner
         if (msg.sender != owner) {
@@ -171,4 +173,31 @@ abstract contract BaseStrategy is ERC20, AccessControl, ReentrancyGuard {
     /// @notice Harvest yield and report total assets
     /// @return Total assets under management
     function _harvestAndReport() internal view virtual returns (uint256);
+
+    // =========================================================
+    // Octant-compatible external hooks (non-restrictive)
+    // These wrappers expose the internal hooks using the names
+    // expected by Octant's TokenizedStrategy lifecycle.
+    // =========================================================
+
+    /// @notice Deploy funds to the underlying yield source
+    /// @dev Exposes the internal _deployFunds hook for compatibility
+    /// @param _amount Amount to deploy
+    function deployFunds(uint256 _amount) external {
+        _deployFunds(_amount);
+    }
+
+    /// @notice Free funds from the underlying yield source
+    /// @dev Exposes the internal _freeFunds hook for compatibility
+    /// @param _amount Amount to free
+    function freeFunds(uint256 _amount) external {
+        _freeFunds(_amount);
+    }
+
+    /// @notice Harvest and return total assets under management
+    /// @dev Exposes the internal _harvestAndReport hook for compatibility
+    /// @return Total assets in base units
+    function harvestAndReport() external view returns (uint256) {
+        return _harvestAndReport();
+    }
 }
