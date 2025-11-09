@@ -8,7 +8,6 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IBaseStrategy} from "../interfaces/IBaseStrategy.sol";
 import {IUniswapV3Router} from "../interfaces/IUniswapV3Router.sol";
 import {AjeyVault} from "../core/AjeyVault.sol";
-import {AaveYieldDonatingStrategy} from "./AaveYieldDonatingStrategy.sol";
 
 /// @title AgentOrchestrator
 /// @notice Orchestrates all agent operations across YDS strategies and vaults

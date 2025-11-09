@@ -27,7 +27,4 @@ interface IBaseStrategy {
 
     /// @notice Returns the underlying asset
     function asset() external view returns (address);
-
-    /// @notice Returns the donation address where yield shares are minted
-    function donationAddress() external view returns (address);
 }
