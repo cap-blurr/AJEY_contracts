@@ -324,5 +324,95 @@ contract AjeyVaultTest is Test {
         vm.expectRevert();
         vault.supplyToAave(1);
     }
+
+    function test_AutoSupplyOn_DepositAutosupplies() public {
+        // Enable auto-supply
+        vm.prank(admin);
+        vault.setAutoSupply(true);
+
+        vm.startPrank(user);
+        usdc.mint(user, 1_000_000);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(1_000_000, user);
+        vm.stopPrank();
+
+        // Idle should be 0, all supplied as aToken
+        assertEq(usdc.balanceOf(address(vault)), 0);
+        assertEq(aUsdc.balanceOf(address(vault)), 1_000_000);
+    }
+
+    function test_PublicDepositsDisabled_BlocksUserDeposit_AllowsStrategy() public {
+        // Disable public deposits
+        vm.prank(admin);
+        vault.setPublicDepositsEnabled(false);
+
+        // User deposit reverts
+        vm.startPrank(user);
+        usdc.mint(user, 500_000);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.expectRevert(bytes("strategy only"));
+        vault.deposit(100_000, user);
+        vm.stopPrank();
+
+        // Strategy can deposit for user
+        address strategy = address(0x5157);
+        vm.prank(admin);
+        vault.addStrategy(strategy);
+        // Fund strategy with USDC and deposit on behalf of user
+        usdc.mint(strategy, 300_000);
+        vm.prank(strategy);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.prank(strategy);
+        uint256 shares = vault.deposit(200_000, user);
+        assertGt(shares, 0);
+        assertEq(vault.balanceOf(user), shares);
+        assertEq(usdc.balanceOf(address(vault)), 200_000);
+    }
+
+    function test_DepositEth_GatingWhenPublicDisabled() public {
+        // New WETH vault
+        AjeyVault wethVault = new AjeyVault(
+            IERC20(address(weth)), IERC20(address(aWeth)), treasury, 1000, IAaveV3Pool(address(pool)), admin
+        );
+        vm.prank(admin);
+        wethVault.addAgent(agent);
+        // Enable ETH mode, disable public deposits
+        vm.startPrank(admin);
+        wethVault.setEthGateway(address(0), true);
+        wethVault.setPublicDepositsEnabled(false);
+        vm.stopPrank();
+
+        // User deposit reverts
+        vm.deal(user, 1 ether);
+        vm.prank(user);
+        vm.expectRevert(bytes("strategy only"));
+        wethVault.depositEth{value: 1 ether}(user);
+
+        // Strategy deposit succeeds
+        address strategy = address(0x5158);
+        vm.prank(admin);
+        wethVault.addStrategy(strategy);
+        vm.deal(strategy, 2 ether);
+        vm.prank(strategy);
+        uint256 shares = wethVault.depositEth{value: 1 ether}(user);
+        assertGt(shares, 0);
+        assertEq(wethVault.balanceOf(user), shares);
+    }
+
+    function test_SetEthGateway_TogglesAllowance() public {
+        // New WETH vault
+        AjeyVault wethVault = new AjeyVault(
+            IERC20(address(weth)), IERC20(address(aWeth)), treasury, 1000, IAaveV3Pool(address(pool)), admin
+        );
+        MockWETHGateway gw = new MockWETHGateway(address(pool), address(weth));
+        // Enable: allowance should be max
+        vm.prank(admin);
+        wethVault.setEthGateway(address(gw), true);
+        assertEq(IERC20(address(aWeth)).allowance(address(wethVault), address(gw)), type(uint256).max);
+        // Disable: allowance should be cleared
+        vm.prank(admin);
+        wethVault.setEthGateway(address(gw), false);
+        assertEq(IERC20(address(aWeth)).allowance(address(wethVault), address(gw)), 0);
+    }
 }
 

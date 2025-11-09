@@ -11,6 +11,8 @@ import {IAaveV3Pool} from "../src/interfaces/IAaveV3Pool.sol";
 import {MockERC20, MockAToken} from "./mocks/MockTokens.sol";
 import {MockAaveV3Pool} from "./mocks/MockAave.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
+import {MockRevertingAggregator} from "./mocks/MockRevertingAggregator.sol";
+import {MockPermitToken} from "./mocks/MockPermitToken.sol";
 
 contract AgentReallocatorTest is Test {
     address internal admin = address(0xA11CE);
@@ -231,6 +233,61 @@ contract AgentReallocatorTest is Test {
 
         // After: approval should be cleared back to 0
         assertEq(IERC20(address(usdc)).allowance(address(realloc), address(aggregator)), 0);
+    }
+
+    function test_AgentCanMigrateOnBehalfOfOwner() public {
+        // Approve reallocator to spend user's v1 shares
+        vm.startPrank(user);
+        IERC20(address(v1)).approve(address(realloc), type(uint256).max);
+        vm.stopPrank();
+
+        uint256 userShares = IERC20(address(v1)).balanceOf(user);
+        // Agent initiates migration
+        vm.prank(admin); // admin has AGENT_ROLE by constructor
+        uint256 outShares = realloc.migrateShares(
+            user, user, address(v1), address(v2), userShares, address(0), bytes(""), 0, block.timestamp + 1 days
+        );
+        assertGt(outShares, 0);
+        assertEq(IERC20(address(v1)).balanceOf(user), 0);
+        assertEq(IERC20(address(v2)).balanceOf(user), outShares);
+    }
+
+    function test_Revert_AggregatorErrorMessageBubbled() public {
+        // Target different asset vault to trigger swap path
+        MockERC20 dai = new MockERC20("Mock DAI", "DAI", 18);
+        MockAToken aDai = new MockAToken("Mock aDAI", "aDAI");
+        MockAaveV3Pool pool2 = new MockAaveV3Pool();
+        pool2.setAToken(address(dai), address(aDai));
+        AjeyVault vDst = new AjeyVault(
+            IERC20(address(dai)), IERC20(address(aDai)), treasury, 500, IAaveV3Pool(address(pool2)), admin
+        );
+
+        MockRevertingAggregator badAgg = new MockRevertingAggregator();
+        vm.prank(admin);
+        realloc.setAggregator(address(badAgg), true);
+
+        vm.startPrank(user);
+        IERC20(address(v1)).approve(address(realloc), type(uint256).max);
+        uint256 shares = IERC20(address(v1)).balanceOf(user) / 2;
+        uint256 assetsFrom = v1.previewRedeem(shares);
+        bytes memory data = abi.encodeWithSelector(
+            MockRevertingAggregator.swap.selector, address(usdc), address(dai), assetsFrom, assetsFrom
+        );
+        vm.expectRevert(bytes("bad swap"));
+        realloc.migrateShares(
+            user, user, address(v1), address(vDst), shares, address(badAgg), data, 1, block.timestamp + 1
+        );
+        vm.stopPrank();
+    }
+
+    function test_PermitShares_CallsPermitOnStrategy() public {
+        MockPermitToken token = new MockPermitToken();
+        vm.prank(admin); // AGENT_ROLE
+        realloc.permitShares(address(token), user, 123, block.timestamp + 1 days, 27, bytes32("r"), bytes32("s"));
+        assertTrue(token.wasCalled());
+        assertEq(token.lastOwner(), user);
+        assertEq(token.lastSpender(), address(realloc));
+        assertEq(token.lastValue(), 123);
     }
 }
 

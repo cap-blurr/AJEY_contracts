@@ -120,7 +120,7 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
         bytes calldata swapCalldata,
         uint256 minAmountOut,
         uint256 deadline
-    ) external nonReentrant returns (uint256 targetSharesOut) {
+    ) external returns (uint256 targetSharesOut) {
         require(receiver == owner, "receiver!=owner");
         return migrateStrategyShares(
             owner, sourceVault, targetVault, shares, aggregator, swapCalldata, minAmountOut, deadline

@@ -91,8 +91,10 @@ contract AaveYieldDonatingStrategy is BaseStrategy {
     function _harvestAndReport() internal override returns (uint256) {
         uint256 idle = IERC20(address(asset)).balanceOf(address(this));
         if (address(vault) == address(0)) return idle;
-        uint256 redeemable = vault.maxWithdraw(address(this));
-        return idle + redeemable;
+        // Use ERC-4626 accounting: value = convertToAssets(sharesHeld)
+        uint256 shares = vault.balanceOf(address(this));
+        uint256 vaultValue = vault.convertToAssets(shares);
+        return idle + vaultValue;
     }
 }
 

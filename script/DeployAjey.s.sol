@@ -22,7 +22,7 @@ contract DeployAjey is Script {
         address aToken = vm.envAddress("ATOKEN");
         address pool = vm.envAddress("AAVE_POOL");
         address treasury = vm.envAddress("TREASURY");
-        uint16 feeBps = uint16(vm.envUint("FEE_BPS"));
+        uint16 feeBps = uint16(vm.envOr("FEE_BPS", uint256(0)));
 
         // Admin/Agent
         address admin = vm.envOr("ADMIN", broadcaster);
