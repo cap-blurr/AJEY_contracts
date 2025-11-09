@@ -4,8 +4,6 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {AjeyVault} from "../src/core/AjeyVault.sol";
 import {IAaveV3Pool} from "../src/interfaces/IAaveV3Pool.sol";
-import {IWETHGateway} from "../src/interfaces/IWETHGateway.sol";
-import {IWETH} from "../src/interfaces/IWETH.sol";
 import {MockERC20, MockAToken, MockWETH} from "./mocks/MockTokens.sol";
 import {MockAaveV3Pool, MockWETHGateway} from "./mocks/MockAave.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";

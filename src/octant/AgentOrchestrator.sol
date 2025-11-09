@@ -7,7 +7,7 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IBaseStrategy} from "../interfaces/IBaseStrategy.sol";
 import {IUniswapV3Router} from "../interfaces/IUniswapV3Router.sol";
-import {AjeyVault} from "../core/AjeyVault.sol";
+import {IStrategyPermit} from "../interfaces/IStrategyPermit.sol";
 
 /// @title AgentOrchestrator
 /// @notice Orchestrates all agent operations across YDS strategies and vaults
@@ -30,6 +30,10 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
 
     // Strategy registry per profile per asset: profile => (asset => strategy)
     mapping(Profile => mapping(address => address)) public strategyOf;
+
+    // Track all strategies per profile for scheduled harvesting
+    mapping(Profile => address[]) public strategiesByProfile;
+    mapping(Profile => mapping(address => bool)) public isStrategyRegistered;
 
     // Configuration
     uint256 public constant SLIPPAGE_TOLERANCE = 9500; // 95% (5% slippage) - informative default, callers pass minOut
@@ -87,12 +91,33 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
         require(asset != address(0) && strategy != address(0), "bad addr");
         require(IBaseStrategy(strategy).asset() == asset, "mismatch");
         strategyOf[profile][asset] = strategy;
+        if (!isStrategyRegistered[profile][strategy]) {
+            isStrategyRegistered[profile][strategy] = true;
+            strategiesByProfile[profile].push(strategy);
+        }
         emit StrategySet(profile, asset, strategy);
     }
 
     /// @notice Harvest yield from all strategies
     function harvestAll() external onlyRole(AGENT_ROLE) {
-        // No-op placeholder: in production you would enumerate strategies by profile and asset
+        // Iterate all profiles and their registered strategies
+        for (uint256 p = 0; p < 3; p++) {
+            Profile profile = Profile(p);
+            address[] storage list = strategiesByProfile[profile];
+            uint256 len = list.length;
+            for (uint256 i = 0; i < len; i++) {
+                _harvestStrategy(list[i]);
+            }
+        }
+    }
+
+    /// @notice Harvest yield from all strategies in a specific profile
+    function harvestProfile(Profile profile) external onlyRole(AGENT_ROLE) {
+        address[] storage list = strategiesByProfile[profile];
+        uint256 len = list.length;
+        for (uint256 i = 0; i < len; i++) {
+            _harvestStrategy(list[i]);
+        }
     }
 
     /// @notice Harvest yield from a specific strategy
@@ -273,6 +298,26 @@ contract AgentOrchestrator is AccessControl, ReentrancyGuard {
         IBaseStrategy(targetStrategy).deposit(amountToDeposit, owner);
 
         emit Reallocated(profile, owner, sourceAsset, targetAsset, shares, amountToDeposit);
+    }
+
+    /// @notice EIP-2612 permit for strategy share token, enabling this orchestrator to manage shares
+    /// @param strategy Strategy address (share token)
+    /// @param owner Owner granting approval
+    /// @param value Allowance value
+    /// @param deadline Permit deadline
+    /// @param v Sig v
+    /// @param r Sig r
+    /// @param s Sig s
+    function permitShares(
+        address strategy,
+        address owner,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external onlyRole(AGENT_ROLE) {
+        IStrategyPermit(strategy).permit(owner, address(this), value, deadline, v, r, s);
     }
 
     /// @notice Add an agent

@@ -341,8 +341,14 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         }
         ethGateway = IWETHGateway(gateway);
         ethMode = enabled;
-        if (enabled && gateway != address(0)) {
-            A_TOKEN.forceApprove(gateway, type(uint256).max);
+        if (gateway != address(0)) {
+            if (enabled) {
+                // Approve aToken (aWETH) to the Wrapped Token Gateway for withdrawETH()
+                A_TOKEN.forceApprove(gateway, type(uint256).max);
+            } else {
+                // Clear approval when disabling to reduce attack surface
+                A_TOKEN.forceApprove(gateway, 0);
+            }
         }
     }
 
@@ -351,16 +357,24 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     /// @return shares Shares minted
     function depositEth(address receiver) external payable whenNotPaused nonReentrant returns (uint256 shares) {
         require(ethMode, "ETH disabled");
+        // Restrict when public deposits are disabled
+        require(publicDepositsEnabled || hasRole(STRATEGY_ROLE, msg.sender), "strategy only");
         uint256 assets = msg.value;
         require(assets > 0, "no ETH");
 
         shares = previewDeposit(assets);
-        IWETH(address(UNDERLYING)).deposit{value: assets}();
+        if (address(ethGateway) != address(0)) {
+            // Use Aave Wrapped Token Gateway to wrap+deposit ETH and mint aWETH to this vault
+            ethGateway.depositETH{value: assets}(address(aavePool), address(this), 0);
+        } else {
+            // Fallback to local wrap + optional autosupply path
+            IWETH(address(UNDERLYING)).deposit{value: assets}();
+        }
         _mint(receiver, shares);
         emit Deposit(msg.sender, receiver, assets, shares);
 
-        // Mirror ERC-4626 deposit behavior: auto-supply any idle to Aave if enabled
-        if (autoSupply) {
+        // If not using gateway, mirror ERC-4626 deposit behavior: auto-supply any idle to Aave if enabled
+        if (autoSupply && address(ethGateway) == address(0)) {
             uint256 idle = UNDERLYING.balanceOf(address(this));
             if (idle > 0) {
                 aavePool.supply(address(UNDERLYING), idle, address(this), 0);
@@ -389,17 +403,35 @@ contract AjeyVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
 
         _burn(owner, shares);
 
-        uint256 idle = UNDERLYING.balanceOf(address(this));
-        if (idle < assets) {
-            uint256 toPull = assets - idle;
-            uint256 received = aavePool.withdraw(address(UNDERLYING), toPull, address(this));
-            require(received >= toPull, "Insufficient Aave withdrawal");
+        // Strategy: prefer using Wrapped Token Gateway when configured
+        if (address(ethGateway) != address(0)) {
+            // If we hold some idle WETH, unwrap up to `assets` locally to reduce gateway calls
+            uint256 idleWeth = UNDERLYING.balanceOf(address(this));
+            uint256 remaining = assets;
+            if (idleWeth > 0) {
+                uint256 toUnwrap = idleWeth < remaining ? idleWeth : remaining;
+                IWETH(address(UNDERLYING)).withdraw(toUnwrap);
+                remaining -= toUnwrap;
+            }
+            if (remaining > 0) {
+                // Use gateway to withdraw remaining as native ETH by burning aWETH
+                ethGateway.withdrawETH(address(aavePool), remaining, address(this));
+            }
+            // Send consolidated ETH to receiver
+            (bool ok,) = payable(receiver).call{value: assets}("");
+            require(ok, "ETH send failed");
+        } else {
+            // Legacy/fallback path without gateway: pull from Aave as WETH and unwrap
+            uint256 idle = UNDERLYING.balanceOf(address(this));
+            if (idle < assets) {
+                uint256 toPull = assets - idle;
+                uint256 received = aavePool.withdraw(address(UNDERLYING), toPull, address(this));
+                require(received >= toPull, "Insufficient Aave withdrawal");
+            }
+            IWETH(address(UNDERLYING)).withdraw(assets);
+            (bool ok,) = payable(receiver).call{value: assets}("");
+            require(ok, "ETH send failed");
         }
-
-        IWETH(address(UNDERLYING)).withdraw(assets);
-        // Forward all available gas to the receiver to reduce risk of unexpected failures
-        (bool ok,) = payable(receiver).call{value: assets}("");
-        require(ok, "ETH send failed");
 
         emit Withdraw(msg.sender, receiver, owner, assets, shares);
     }

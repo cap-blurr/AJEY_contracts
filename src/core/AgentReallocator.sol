@@ -6,6 +6,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IBaseStrategy} from "../interfaces/IBaseStrategy.sol";
+import {IStrategyPermit} from "../interfaces/IStrategyPermit.sol";
 
 /// @title AgentReallocator
 /// @notice Orchestrates user-approved migrations between YDS strategies with optional off-chain swap aggregator
@@ -124,6 +125,26 @@ contract AgentReallocator is AccessControl, ReentrancyGuard {
         return migrateStrategyShares(
             owner, sourceVault, targetVault, shares, aggregator, swapCalldata, minAmountOut, deadline
         );
+    }
+
+    /// @notice EIP-2612 permit for strategy share token, enabling this reallocator to manage shares
+    /// @param strategy Strategy address (share token)
+    /// @param owner Owner granting approval
+    /// @param value Allowance value
+    /// @param deadline Permit deadline
+    /// @param v Sig v
+    /// @param r Sig r
+    /// @param s Sig s
+    function permitShares(
+        address strategy,
+        address owner,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external onlyRole(AGENT_ROLE) {
+        IStrategyPermit(strategy).permit(owner, address(this), value, deadline, v, r, s);
     }
 
     /// @notice Internal swap function
