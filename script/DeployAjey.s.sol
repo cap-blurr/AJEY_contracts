@@ -13,7 +13,6 @@ contract DeployAjey is Script {
     function run() external {
         // Optional PRIVATE_KEY; if not provided, Foundry will use the default broadcaster
         uint256 privKey = vm.envOr("PRIVATE_KEY", uint256(0));
-        address broadcaster = privKey != 0 ? vm.addr(privKey) : address(0);
         if (privKey != 0) vm.startBroadcast(privKey);
         else vm.startBroadcast();
 
@@ -23,8 +22,8 @@ contract DeployAjey is Script {
         uint16 feeBps = uint16(vm.envOr("FEE_BPS", uint256(0)));
 
         // Admin/Agent
-        address admin = vm.envOr("ADMIN", broadcaster);
-        require(admin != address(0), "ADMIN not set and no PRIVATE_KEY");
+        address admin = vm.envOr("ADMIN", tx.origin);
+        require(admin != address(0), "ADMIN not set");
         address agent = vm.envOr("AGENT", address(0));
 
         // Global toggles
@@ -50,7 +49,7 @@ contract DeployAjey is Script {
 
                 // Optionally enable native ETH for the WETH asset; fallback to local WETH if gateway unset
                 if (enableEth && (wethAsset != address(0) && asset == wethAsset)) {
-                    if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
+                    if (admin == tx.origin) {
                         vault.setEthGateway(ethGateway, true);
                         if (ethGateway == address(0)) {
                             console2.log("ETH mode enabled without gateway (using local WETH fallback)");
@@ -62,7 +61,7 @@ contract DeployAjey is Script {
 
                 // Grant AGENT_ROLE if agent provided and broadcaster is admin
                 if (agent != address(0)) {
-                    if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
+                    if (admin == tx.origin) {
                         vault.addAgent(agent);
                     } else {
                         console2.log("WARN: Skipping addAgent - broadcaster != admin");
@@ -71,7 +70,7 @@ contract DeployAjey is Script {
 
                 // Optionally enable auto-supply of idle underlying to Aave
                 if (autoSupply) {
-                    if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
+                    if (admin == tx.origin) {
                         vault.setAutoSupply(true);
                     } else {
                         console2.log("WARN: Skipping setAutoSupply - broadcaster != admin");
@@ -79,7 +78,7 @@ contract DeployAjey is Script {
                 }
 
                 // Set public deposits mode on each vault
-                if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
+                if (admin == tx.origin) {
                     vault.setPublicDepositsEnabled(publicDeposits);
                     console2.log("PublicDepositsEnabled", publicDeposits);
                 } else {
@@ -98,7 +97,7 @@ contract DeployAjey is Script {
             AjeyVault vault = new AjeyVault(IERC20(asset), IERC20(aToken), treasury, feeBps, IAaveV3Pool(pool), admin);
 
             if (enableEth && (wethAsset != address(0) && asset == wethAsset)) {
-                if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
+                if (admin == tx.origin) {
                     vault.setEthGateway(ethGateway, true);
                     if (ethGateway == address(0)) {
                         console2.log("ETH mode enabled without gateway (using local WETH fallback)");
@@ -109,7 +108,7 @@ contract DeployAjey is Script {
             }
 
             if (agent != address(0)) {
-                if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
+                if (admin == tx.origin) {
                     vault.addAgent(agent);
                 } else {
                     console2.log("WARN: Skipping addAgent - broadcaster != admin");
@@ -117,14 +116,14 @@ contract DeployAjey is Script {
             }
 
             if (autoSupply) {
-                if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
+                if (admin == tx.origin) {
                     vault.setAutoSupply(true);
                 } else {
                     console2.log("WARN: Skipping setAutoSupply - broadcaster != admin");
                 }
             }
 
-            if (admin == (broadcaster == address(0) ? admin : broadcaster)) {
+            if (admin == tx.origin) {
                 vault.setPublicDepositsEnabled(publicDeposits);
                 console2.log("PublicDepositsEnabled", publicDeposits);
             } else {
@@ -158,7 +157,7 @@ contract DeployAjey is Script {
             address aggregator = vm.envOr("AGGREGATOR", address(0));
             bool allowAggregator = vm.envOr("ALLOW_AGGREGATOR", false);
             if (allowAggregator && aggregator != address(0)) {
-                if (reallocAdmin == (broadcaster == address(0) ? reallocAdmin : broadcaster)) {
+                if (reallocAdmin == tx.origin) {
                     reallocator.setAggregator(aggregator, true);
                 } else {
                     console2.log("WARN: Skipping setAggregator - broadcaster != realloc admin");

@@ -12,7 +12,7 @@ contract DeployOrchestrator is Script {
         if (pk != 0) vm.startBroadcast(pk);
         else vm.startBroadcast();
 
-        address admin = vm.envAddress("ADMIN");
+        address admin = vm.envOr("ADMIN", tx.origin);
         address agent = vm.envAddress("AGENT");
         address uniswapRouter = vm.envAddress("UNISWAP_ROUTER");
         uint24 defaultPoolFee = uint24(vm.envUint("DEFAULT_POOL_FEE"));
