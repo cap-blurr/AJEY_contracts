@@ -383,12 +383,6 @@ AJEY/
 
 * Foundry (`forge`, `cast`), Node 18+
 * RPC URL(s): mainnet/Tenderly fork
-* `.env` sample:
-
-```
-RPC_URL="<your fork/mainnet rpc>"
-ETHERSCAN_API_KEY="<optional>"
-```
 
 ### Build
 
