@@ -32,9 +32,7 @@ This is an existing project that I started in the just concluded base batches ha
   * *Balanced* → 40% / 30% / 30%
   * *Humanitarian‑Maxi* → 20% / 40% / 40%
 
-# Reviewer Notes — Internal Architecture & Evidence (Append‑Only)
-
-> This section augments the existing README **without changing its voice or intent**. It adds reviewer‑grade, code‑cited details so judges can verify how Ajey works internally and how I’ve implemented Octant YDS in a multi‑asset, orchestrated way. All edits below are *additive*.
+# Internal Architecture
 
 ---
 
