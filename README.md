@@ -1,5 +1,8 @@
 # AJEY — Automated Multi‑Asset Yield → Public Goods (Octant v2 + Aave v3)
 
+## NB:
+This is an existing project that I started in the just concluded base batches hackathon, the main branch from AJEY_contracts was the previous code from the hackathon, the current code for octant is under the octant-branch in the same repo
+
 > **Elevator pitch.** Deposit once (ETH or stablecoins). My **agent orchestrator** reallocates across Aave v3 markets (WETH/USDC/USDT/DAI) for best net yield. **All realized yield** is donated on‑chain to **multiple** public‑goods recipients via preset mixes (Crypto‑Maxi, Balanced, Humanitarian‑Maxi).
 
 ---
