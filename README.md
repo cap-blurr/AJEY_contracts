@@ -32,6 +32,264 @@ This is an existing project that I started in the just concluded base batches ha
   * *Balanced* → 40% / 30% / 30%
   * *Humanitarian‑Maxi* → 20% / 40% / 40%
 
+# Reviewer Notes — Internal Architecture & Evidence (Append‑Only)
+
+> This section augments the existing README **without changing its voice or intent**. It adds reviewer‑grade, code‑cited details so judges can verify how Ajey works internally and how I’ve implemented Octant YDS in a multi‑asset, orchestrated way. All edits below are *additive*.
+
+---
+
+## System architecture at a glance
+
+* **AjeyVault** — ERC‑4626 vault per asset (WETH/USDC/USDT/DAI) that supplies to **Aave v3**, mints performance fees in shares, and enforces deposit policy.
+* **AaveYieldDonatingStrategy (Octant YDS)** — Single‑asset strategy that deploys to exactly one AjeyVault and donates profit on `report()`.
+* **AgentOrchestrator** — Main agent entrypoint. Maintains profile→asset→strategy mappings; executes deposits, withdrawals, reallocations (Uniswap V3 swaps), and harvesting.
+* **AgentReallocator** — Migration helper using whitelisted aggregators (e.g., 1inch/0x) for cross‑strategy asset swaps.
+* **PaymentSplitters** — Donation recipients for *Balanced / MaxHumanitarian / MaxCrypto*.
+
+### Profiles
+
+* `Balanced = 0`, `MaxHumanitarian = 1`, `MaxCrypto = 2`
+
+---
+
+## Roles and permissions (code‑cited)
+
+**AjeyVault**
+
+```solidity
+// src/core/AjeyVault.sol
+bytes32 public constant AGENT_ROLE = keccak256("AGENT_ROLE");
+bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+bytes32 public constant STRATEGY_ROLE = keccak256("STRATEGY_ROLE");
+```
+
+**AaveYieldDonatingStrategy**
+
+* Uses Octant TokenizedStrategy roles: `management`, `keeper` (often the Orchestrator), `emergencyAdmin`.
+
+**AgentOrchestrator**
+
+```solidity
+// src/octant/AgentOrchestrator.sol
+constructor(address _admin, address _agent, address _uniswapRouter, uint24 _defaultPoolFee) {
+    _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+    _grantRole(AGENT_ROLE, _agent);
+}
+```
+
+**AgentReallocator**
+
+```solidity
+// src/core/AgentReallocator.sol
+constructor(address admin, address agent) {
+    _grantRole(DEFAULT_ADMIN_ROLE, admin);
+    _grantRole(AGENT_ROLE, agent);
+}
+```
+
+**PaymentSplitter (Octant)**
+
+```solidity
+// src/interfaces/octant/IPaymentSplitter.sol
+interface IPaymentSplitter {
+    function initialize(address[] calldata payees, uint256[] calldata shares_) external;
+    function release(address token, address account) external;
+    function totalShares() external view returns (uint256);
+    function shares(address account) external view returns (uint256);
+}
+```
+
+---
+
+## Accounting model & safeguards (code‑cited)
+
+### AjeyVault
+
+**Total assets = idle underlying + aToken balance**
+
+```solidity
+// src/core/AjeyVault.sol
+function totalAssets() public view override returns (uint256) {
+    uint256 idle = UNDERLYING.balanceOf(address(this));
+    uint256 aBal = A_TOKEN.balanceOf(address(this));
+    return idle + aBal;
+}
+```
+
+**Deposit/mint gating**
+
+```solidity
+// src/core/AjeyVault.sol
+require(publicDepositsEnabled || hasRole(STRATEGY_ROLE, msg.sender), "strategy only");
+```
+
+**Auto‑supply to Aave after deposit (optional)**
+
+```solidity
+// src/core/AjeyVault.sol
+if (autoSupply) {
+    uint256 idle = UNDERLYING.balanceOf(address(this));
+    if (idle > 0) {
+        aavePool.supply(address(UNDERLYING), idle, address(this), 0);
+    }
+}
+```
+
+**Withdraw / redeem pulls from Aave if needed**
+
+```solidity
+// src/core/AjeyVault.sol
+uint256 idle = UNDERLYING.balanceOf(address(this));
+if (idle < assets) {
+    uint256 toPull = assets - idle;
+    uint256 received = aavePool.withdraw(address(UNDERLYING), toPull, address(this));
+    require(received >= toPull, "Insufficient Aave withdrawal");
+}
+```
+
+**Performance fee minted in shares at checkpoint**
+
+```solidity
+// src/core/AjeyVault.sol
+uint256 currentAssets = totalAssets();
+uint256 prevCheckpointAssets = lastCheckpointAssets;
+if (currentAssets > prevCheckpointAssets && feeBps > 0) {
+    uint256 grossGain = currentAssets - prevCheckpointAssets;
+    uint256 feeAssets = (grossGain * feeBps) / 10_000;
+    uint256 sharesForFee = convertToShares(feeAssets);
+    _mint(treasury, sharesForFee);
+}
+```
+
+**ETH convenience for WETH vaults**
+
+```solidity
+// src/core/AjeyVault.sol
+require(ethMode, "ETH disabled");
+require(publicDepositsEnabled || hasRole(STRATEGY_ROLE, msg.sender), "strategy only");
+// optional WETHGateway integration
+```
+
+### AaveYieldDonatingStrategy (Octant YDS)
+
+**Single‑asset, single‑vault invariant**
+
+```solidity
+// src/octant/AaveYieldDonatingStrategy.sol
+require(_vault != address(0), "vault=0");
+require(AjeyVault(_vault).asset() == _asset, "asset mismatch");
+vault = AjeyVault(_vault);
+IERC20(_asset).forceApprove(_vault, type(uint256).max);
+```
+
+**Deploy & free funds defer to the vault**
+
+```solidity
+// src/octant/AaveYieldDonatingStrategy.sol
+function _deployFunds(uint256 amount) internal override { if (amount == 0) return; vault.deposit(amount, address(this)); }
+function _freeFunds(uint256 amount)   internal override { if (amount == 0) return; vault.withdraw(amount, address(this), address(this)); }
+```
+
+**Valuation for report()**
+
+```solidity
+// src/octant/AaveYieldDonatingStrategy.sol
+uint256 idle = IERC20(address(asset)).balanceOf(address(this));
+uint256 shares = vault.balanceOf(address(this));
+uint256 vaultValue = vault.convertToAssets(shares);
+return idle + vaultValue;
+```
+
+### Orchestrator (selected flows)
+
+**Set strategy mapping (profile, asset) → strategy**
+
+```solidity
+// src/octant/AgentOrchestrator.sol
+function setStrategy(Profile profile, address asset, address strategy) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(asset != address(0) && strategy != address(0), "bad addr");
+    require(IBaseStrategy(strategy).asset() == asset, "mismatch");
+    strategyOf[profile][asset] = strategy;
+}
+```
+
+**Deposit with optional swap, then deposit into strategy**
+
+```solidity
+// src/octant/AgentOrchestrator.sol
+IERC20(inputAsset).safeTransferFrom(from, address(this), amountIn);
+if (inputAsset != targetAsset) { /* Uniswap V3 exactInputSingle */ }
+IERC20(targetAsset).forceApprove(strategy, amountToDeposit);
+sharesOut = IBaseStrategy(strategy).deposit(amountToDeposit, receiver);
+```
+
+**Reallocate (report → compute assets → withdraw → swap → deposit)**
+
+```solidity
+// src/octant/AgentOrchestrator.sol
+try IBaseStrategy(sourceStrategy).report() {} catch {}
+uint256 totalAssets = IBaseStrategy(sourceStrategy).totalAssets();
+uint256 totalSupply = IERC20(sourceStrategy).totalSupply();
+uint256 assetsFrom = (shares * totalAssets) / totalSupply;
+IBaseStrategy(sourceStrategy).withdraw(assetsFrom, address(this), owner);
+// swap if needed → deposit to target
+```
+
+**Harvest helpers**
+
+```solidity
+// src/octant/AgentOrchestrator.sol
+function harvestAll() external onlyRole(AGENT_ROLE) { /* iterate */ }
+function _harvestStrategy(address strategy) internal { (uint256 profit, uint256 loss) = IBaseStrategy(strategy).report(); }
+```
+
+### Reallocator (selected flows)
+
+**Migrate via whitelisted aggregator**
+
+```solidity
+// src/core/AgentReallocator.sol
+require(isAggregator[aggregator], "agg not allowed");
+// approve → low‑level call → balance‑delta check → minAmountOut guard
+```
+
+---
+
+## External interfaces & exact signatures (abridged)
+
+* **Orchestrator (agent‑only)** — `depositERC20`, `withdrawERC20`, `reallocate`, `permitShares`, `harvestAll/harvestProfile/harvestStrategy`, `strategyOf`.
+* **Reallocator** — `migrateStrategyShares`, `permitShares`, `setAggregator`.
+* **Strategy** — `vault()`, `TOKENIZED_STRATEGY_ADDRESS()` + Octant TokenizedStrategy surface.
+* **Vault** — ERC‑4626 + maintenance: `setParams`, `setAutoSupply`, `setPublicDepositsEnabled`, `setEthGateway`, `depositEth/withdrawEth`, `supplyToAave`, `withdrawFromAave`, `takeFees`, `checkpoint`, `addStrategy/removeStrategy`, `addAgent/removeAgent`.
+
+---
+
+## Invariants & safety checks (summary)
+
+* **Single‑source strategy:** Strategy asset must equal vault asset; cross‑asset moves live in Orchestrator/Reallocator.
+* **Deposit access control:** Strategy‑only deposits when `publicDepositsEnabled=false`.
+* **Liquidity fulfillment:** Vault withdraw path pulls from Aave when idle is insufficient.
+* **Slippage controls:** `minAmountOut` required; Reallocator validates via balance‑delta.
+* **P/L realization before moves:** `report()` invoked before computing `assetsFrom`.
+* **Approval hygiene:** `forceApprove` usage; aggregator approvals cleared.
+
+---
+
+## Deployment & wiring (reviewer view)
+
+1. **PaymentSplitters** — Deploy three splitters with share weights for *(Balanced / MaxHumanitarian / MaxCrypto)*.
+2. **AjeyVaults** — Deploy per asset; optionally set `publicDepositsEnabled=false`, `autoSupply=true`; grant `AGENT_ROLE` to the agent wallet.
+3. **AgentOrchestrator** — Deploy with `(admin, agent, uniswapRouter, defaultPoolFee)`; set strategies via `setStrategy`.
+4. **AaveYieldDonatingStrategy** — Deploy per *(asset × profile)*; `keeper` points to Orchestrator; donation address = splitter.
+5. **AgentReallocator (optional)** — Deploy and `setAggregator(...)` allowlist.
+
+---
+
+## Why this is a creative YDS implementation
+
+* **Strict YDS purity on‑chain** (single‑source strategies, donation at `report()`), combined with **off‑chain, agent‑driven cross‑asset allocation** yields a *multi‑asset* YDS experience without bloating on‑chain complexity.
+* **Auditable minimal surface area** (small vaults, thin strategies, periphery orchestration) preserves clarity and reduces risk while achieving multi‑cause, multi‑asset funding.
+
 ### Donation recipients (mainnet EVM)
 
 * **Crypto public goods:** Web3Afrika — `0x4BaF3334dF86FB791A6DF6Cf4210C685ab6A1766`
